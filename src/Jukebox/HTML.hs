@@ -3,11 +3,14 @@ module Jukebox.HTML (
   classNames,
   buttonStylesPrimary,
   buttonStyles,
+  attr,
+  hx,
+  ws,
 ) where
 
 import Relude
 
-import Text.Blaze.Html5 (Attribute, AttributeValue, Html, body, docTypeHtml, meta, script, (!))
+import Text.Blaze.Html5 (Attribute, AttributeValue, Html, body, customAttribute, docTypeHtml, meta, script, (!))
 import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes (charset, class_, content, lang, name, src)
 
@@ -18,8 +21,14 @@ frontMatter children = docTypeHtml ! lang "en" $ do
     meta ! name "viewport" ! content "width=device-width, initial-scale=1"
     H.title "Jukebox"
     meta ! name "description" ! content "Listen to music with your friends"
-    script ! src "https://cdn.tailwindcss.com" $ ""
-  body children
+    script ! src "https://cdn.tailwindcss.com" $ pass
+    script
+      ! src "https://unpkg.com/htmx.org@2.0.3"
+      ! customAttribute "integrity" "sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq"
+      ! customAttribute "crossorigin" "anonymous"
+      $ pass
+    script ! src "https://unpkg.com/htmx-ext-ws@2.0.1/ws.js" $ pass
+  body ! hx "boost" "true" $ children
 
 classNames :: [AttributeValue] -> Attribute
 classNames = class_ . foldl' (\a b -> a <> " " <> b) ""
@@ -56,3 +65,12 @@ buttonStyles =
        , "ring-inset"
        , "ring-gray-300"
        ]
+
+hx :: Text -> Text -> Attribute
+hx tag = attr ("hx-" <> tag)
+
+ws :: Text -> Text -> Attribute
+ws tag = attr ("ws-" <> tag)
+
+attr :: Text -> Text -> Attribute
+attr tag value = customAttribute (fromString (toString tag)) (fromString (toString value))

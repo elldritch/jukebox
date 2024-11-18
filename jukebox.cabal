@@ -46,16 +46,19 @@ library
     , relude
 
   build-depends:
-    , async           ==2.2.5
-    , blaze-html      ==0.9.2.0
-    , data-default    ==0.8.0.0
-    , servant         ==0.20.2
-    , servant-blaze   ==0.9.1
-    , servant-server  ==0.20.2
-    , sqids           ==0.2.2.0
-    , stm             ==2.5.1.0
-    , wai-websockets  ==3.0.1.2
-    , websockets      ==0.13.0.0
+    , aeson            ==2.2.3.0
+    , async            ==2.2.5
+    , blaze-html       ==0.9.2.0
+    , bytestring       ==0.11.5.3
+    , data-default     ==0.8.0.0
+    , safe-exceptions  ==0.1.7.4
+    , servant          ==0.20.2
+    , servant-blaze    ==0.9.1
+    , servant-server   ==0.20.2
+    , sqids            ==0.2.2.0
+    , stm              ==2.5.1.0
+    , wai-websockets   ==3.0.1.2
+    , websockets       ==0.13.0.0
 
   hs-source-dirs:  src
 

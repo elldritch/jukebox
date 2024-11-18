@@ -1,26 +1,45 @@
 module Jukebox.Rooms (
-  RoomID,
-  ClientID,
+  RoomID (..),
+  ClientID (..),
   Rooms (..),
   Room (..),
-  allocateRoomAndManager,
+  startRoom,
+  handleClient,
 ) where
 
 import Relude
-import Relude.Extra.Map (insert)
+import Relude.Extra.Map (delete, insert, keys, lookup, toPairs)
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (Async, async, link)
-import Control.Concurrent.STM (TQueue, newTQueue)
+import Control.Concurrent.Async (Async, async, cancel, link, wait)
+import Control.Concurrent.STM (TQueue, newTQueue, readTQueue, writeTQueue)
+import Control.Exception.Safe (catch, throwIO)
+import Data.Aeson (ToJSON (..), decode, defaultOptions, eitherDecode, encode, genericToEncoding, withObject)
+import Data.Aeson.Types (Parser, Value, parseEither, parseFail, (.:))
 import Data.Default (Default (..))
-import Network.WebSockets (DataMessage)
+import Network.WebSockets (
+  Connection,
+  ConnectionException (..),
+  DataMessage (..),
+  defaultPingPongOptions,
+  receiveDataMessage,
+  sendDataMessage,
+  withPingPong,
+ )
+import Network.WebSockets qualified as WS
 import Servant (FromHttpApiData)
-import Text.Blaze.Html (ToMarkup)
-import Web.Sqids (SqidsOptions (..), defaultSqidsOptions, encode, runSqids)
+import System.IO.Unsafe (unsafePerformIO)
+import Text.Blaze.Html (Html, ToMarkup, (!))
+import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
+import Text.Blaze.Html5 (li, p, toHtml)
+import Text.Blaze.Html5 qualified as H
+import Text.Blaze.Html5.Attributes qualified as A
+import Web.Sqids (SqidsOptions (..), defaultSqidsOptions, runSqids)
+import Web.Sqids qualified as Sqids
 
 newtype RoomID = RoomID Text
   deriving stock (Show)
-  deriving newtype (Eq, Ord, FromHttpApiData, ToString, ToMarkup)
+  deriving newtype (Eq, Ord, FromHttpApiData, ToString, ToMarkup, ToJSON)
 
 instance ConvertUtf8 RoomID ByteString where
   encodeUtf8 = encodeUtf8 . coerce @RoomID @Text
@@ -29,15 +48,12 @@ instance ConvertUtf8 RoomID ByteString where
 
 newtype ClientID = ClientID Text
   deriving stock (Show)
-  deriving newtype (Eq, Ord, FromHttpApiData)
+  deriving newtype (Eq, Ord, FromHttpApiData, ToJSON)
 
-data Rooms = Rooms
-  { rooms :: Map RoomID Room
-  , nextRoomID :: Int
-  }
+newtype Rooms = Rooms {rooms :: Map RoomID Room}
 
 instance Default Rooms where
-  def = Rooms{rooms = mempty, nextRoomID = 0}
+  def = Rooms mempty
 
 -- Each room has one thread, and each websocket has two threads.
 --
@@ -50,47 +66,181 @@ instance Default Rooms where
 -- The room thread receives messages from the room's inbox, acts on them, and
 -- then puts any new messages into the outboxes of the correct clients.
 data Room = Room
-  { clientOutboxes :: Map ClientID (TQueue DataMessage)
-  , roomInbox :: TQueue DataMessage
+  { clientOutboxes :: Map ClientID (TQueue ServerMessage)
+  , roomInbox :: TQueue ClientMessage
   , owner :: Maybe ClientID
-  , nextClientID :: Int
   }
 
 -- Allocate a room in the TVar, and then fork a thread that manages the room.
-allocateRoomAndManager :: TVar Rooms -> IO (RoomID, Async Void)
-allocateRoomAndManager tvar = do
-  roomID <- atomically $ do
+startRoom :: TVar Rooms -> IO (RoomID, Async Void)
+startRoom tvar = do
+  roomID <- RoomID <$> liftIO generateID
+  roomInbox <- atomically $ do
     roomInbox <- newTQueue
-    Rooms{nextRoomID, rooms} <- readTVar tvar
-    let nextRoomID' = nextRoomID + 1
-        roomID = generateRoomID nextRoomID'
-        newRoom = Room{clientOutboxes = mempty, roomInbox, owner = Nothing, nextClientID = 0}
-        rooms' = Rooms{nextRoomID = nextRoomID', rooms = insert roomID newRoom rooms}
+    Rooms{rooms} <- readTVar tvar
+    let newRoom = Room{clientOutboxes = mempty, roomInbox, owner = Nothing}
+        rooms' = Rooms{rooms = insert roomID newRoom rooms}
     writeTVar tvar rooms'
-    pure roomID
-  roomManager <- async $ manageRoom roomID
+    pure roomInbox
+  _debug <- async $ debugLoop roomID
+  roomManager <- async $ roomThread roomID roomInbox
   link roomManager
   pure (roomID, roomManager)
  where
-  manageRoom roomID = do
-    putStrLn $ "Managing room " <> show roomID
-    threadDelay $ 10 * 1000000
-    manageRoom roomID
+  debugLoop :: RoomID -> IO ()
+  debugLoop roomID = putStrLn ("Heartbeat: room " <> show roomID) >> delaySeconds 10 >> debugLoop roomID
 
-generateRoomID :: Int -> RoomID
-generateRoomID = RoomID . generateID . one
+  roomThread :: RoomID -> TQueue ClientMessage -> IO Void
+  roomThread roomID roomInbox = do
+    putStrLn $ "Waiting for messages to room " <> show roomID
+    msg <- atomically $ readTQueue roomInbox
+    putStrLn $ "Got message for room " <> show roomID <> ": " <> show msg
+    case msg of
+      ClientListChanged -> do
+        atomically $ do
+          room <- readRoom roomID id tvar
+          forM_ (toPairs room.clientOutboxes) $ \(clientID, outbox) -> do
+            writeTQueue outbox $
+              UpdateClientList
+                { clients = keys room.clientOutboxes
+                , owner = room.owner
+                , you = clientID
+                }
+      RequestVideoID videoID -> undefined
+    roomThread roomID roomInbox
 
-generateClientID :: Int -> Int -> ClientID
-generateClientID roomID clientID = ClientID $ generateID [roomID, clientID]
+data ServerMessage
+  = UpdateClientList {clients :: [ClientID], owner :: Maybe ClientID, you :: ClientID}
+  | SetVideoURL {url :: Text}
+  | Play
+  | Pause
+  | Seek {seconds :: Double}
+  deriving stock (Show, Eq, Generic)
 
--- So many of these sqids errors are programmer invariants or setup errors. I
--- don't think these errors will occur in practice (except perhaps
--- MaxEncodingAttempts). Really, I should upstream a more ergonomic API.
-generateID :: [Int] -> Text
-generateID ns = case runSqids defaultSqidsOptions{minLength = 6} $ encode ns of
-  Left err -> bug $ Impossible $ "sqid generation failed: " <> show err
-  Right x -> x
+renderServerMessage :: ServerMessage -> Html
+renderServerMessage UpdateClientList{clients, owner, you = ClientID you} =
+  H.div ! A.id "listeners" $ do
+    forM_ clients $ \(ClientID cid) -> do
+      li $ toHtml (cid <> if cid == you then " (you)" else "")
+renderServerMessage _ = undefined
+
+instance ToJSON ServerMessage where
+  toEncoding = genericToEncoding defaultOptions
+
+data ClientMessage
+  = ClientListChanged
+  | ClientLeft
+  | RequestVideoID {videoID :: Text}
+  deriving stock (Show, Eq)
+
+withRoom :: RoomID -> (Room -> (Room, a)) -> TVar Rooms -> STM a
+withRoom roomID f tvar = do
+  r@Rooms{rooms} <- readTVar tvar
+  let (newRoom, projected) = f $ fromMaybe (bug $ InvariantViolated $ "Room " <> show roomID <> " does not exist") $ lookup roomID rooms
+  writeTVar tvar r{rooms = insert roomID newRoom rooms}
+  pure projected
+
+readRoom :: RoomID -> (Room -> a) -> TVar Rooms -> STM a
+readRoom roomID f = withRoom roomID (\room -> (room, f room))
+
+modifyRoom :: RoomID -> (Room -> Room) -> TVar Rooms -> STM ()
+modifyRoom roomID f = withRoom roomID (\room -> (f room, ()))
+
+handleClient :: RoomID -> TVar Rooms -> Connection -> IO ()
+handleClient roomID tvar conn = do
+  clientID <- ClientID <$> liftIO generateID
+  (clientOutbox, roomInbox) <- atomically $ do
+    clientOutbox <- newTQueue
+    roomInbox <-
+      withRoom
+        roomID
+        ( \room ->
+            ( room{clientOutboxes = insert clientID clientOutbox room.clientOutboxes}
+            , room.roomInbox
+            )
+        )
+        tvar
+    pure (clientOutbox, roomInbox)
+  withPingPong defaultPingPongOptions conn $ \conn' -> do
+    _debug <- async $ debugLoop clientID
+    _sender <- async $ do
+      -- Queue initial messages for room broadcasting.
+      putStrLn $ "Queueing initial messages on client join for " <> show clientID
+      let msg = ClientListChanged
+      atomically $ writeTQueue roomInbox msg
+      putStrLn $ "Queued messages: " <> show msg
+      -- Start outbox loop.
+      sendLoop conn' clientID clientOutbox
+    receiver <-
+      async $
+        receiveLoop conn' clientID roomInbox `catch` \(e :: ConnectionException) -> case e of
+          CloseRequest _ _ -> do
+            putStrLn $ "Client " <> show clientID <> " disconnected"
+            atomically $ do
+              r@Rooms{rooms} <- readTVar tvar
+              withRoom roomID (\room -> (room, room.clientOutboxes)) tvar
+              let room = fromMaybe (bug $ InvariantViolated $ "Room " <> show roomID <> " does not exist") $ lookup roomID rooms
+                  newRoom = room{clientOutboxes = delete clientID room.clientOutboxes}
+                  newRooms = insert roomID newRoom $ delete roomID rooms
+              writeTVar tvar r{rooms = newRooms}
+            pass
+          e' -> throwIO e'
+    wait receiver
+    putStrLn $ "Cleaning up after client" <> show clientID <> " disconnected"
+    cancel receiver
+    cancel _sender
+    cancel _debug
+    putStrLn $ "Cleaned up after client" <> show clientID <> " disconnected"
+ where
+  debugLoop :: ClientID -> IO ()
+  debugLoop clientID = putStrLn ("Heartbeat: client " <> show clientID) >> delaySeconds 10 >> debugLoop clientID
+
+  sendLoop :: Connection -> ClientID -> TQueue ServerMessage -> IO ()
+  sendLoop conn' clientID clientOutbox = do
+    putStrLn $ "Waiting for new message to send to client " <> show clientID
+    msg <- atomically (readTQueue clientOutbox)
+    putStrLn $ "Got new message to sen to client " <> show clientID <> ": " <> show msg
+    sendDataMessage conn' $ WS.Text (renderHtml $ renderServerMessage msg) Nothing
+    putStrLn $ "Sent message to client " <> show clientID
+    sendLoop conn' clientID clientOutbox
+
+  receiveLoop :: Connection -> ClientID -> TQueue ClientMessage -> IO ()
+  receiveLoop conn' clientID roomInbox = do
+    msg <- receiveDataMessage conn'
+    putStrLn $ "Received message from client " <> show clientID <> ": " <> show msg
+    bs <- case msg of
+      WS.Text m _ -> pure m
+      WS.Binary _ -> bug $ InvariantViolated $ "Received binary message from client " <> show clientID <> ": " <> show msg
+    let result = eitherDecode bs >>= parseEither parseClientMessage
+    clientMessage <- case result of
+      Left err -> bug $ InvariantViolated $ "Failed to parse message from client " <> show clientID <> ": " <> show err
+      Right cmsg -> pure cmsg
+    atomically $ writeTQueue roomInbox clientMessage
+    receiveLoop conn' clientID roomInbox
+   where
+    parseClientMessage :: Value -> Parser ClientMessage
+    parseClientMessage = withObject "ClientMessage" $ \o -> do
+      action :: Text <- o .: "action"
+      case action of
+        "set-video-id" -> do
+          videoID <- o .: "video-id"
+          pure $ RequestVideoID{videoID}
+        _ -> parseFail $ "invalid ClientMessage action: " <> show action
+
+nextID :: IORef Int
+{-# NOINLINE nextID #-}
+nextID = unsafePerformIO $ newIORef 0
+
+generateID :: IO Text
+generateID = do
+  nextID' <- modifyIORef nextID (+ 1) >> readIORef nextID
+  case runSqids defaultSqidsOptions{minLength = 6} $ Sqids.encode [nextID'] of
+    Left err -> bug $ Impossible $ "sqid generation failed: " <> show err
+    Right generated -> pure generated
 
 data BugException = InvariantViolated String | Impossible String
   deriving stock (Show)
   deriving anyclass (Exception)
+
+delaySeconds :: Int -> IO ()
+delaySeconds = threadDelay . (* 1000000)
