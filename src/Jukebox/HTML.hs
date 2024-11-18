@@ -10,7 +10,19 @@ module Jukebox.HTML (
 
 import Relude
 
-import Text.Blaze.Html5 (Attribute, AttributeValue, Html, body, customAttribute, docTypeHtml, meta, script, (!))
+import Text.Blaze.Html5 (
+  Attribute,
+  AttributeValue,
+  Html,
+  body,
+  customAttribute,
+  docTypeHtml,
+  meta,
+  script,
+  textTag,
+  toValue,
+  (!),
+ )
 import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes (charset, class_, content, lang, name, src)
 
@@ -73,4 +85,4 @@ ws :: Text -> Text -> Attribute
 ws tag = attr ("ws-" <> tag)
 
 attr :: Text -> Text -> Attribute
-attr tag value = customAttribute (fromString (toString tag)) (fromString (toString value))
+attr tag value = customAttribute (textTag tag) (toValue value)
