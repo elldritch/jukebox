@@ -21,9 +21,9 @@ import Servant.HTML.Blaze (HTML)
 import Servant.Server (Application, Handler, Server, ServerError (..), err303, hoistServer, serve)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
 import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
-import Text.Blaze.Html5 (Html, a, button, form, h1, input, label, p, script, toHtml, ul, (!))
+import Text.Blaze.Html5 (Html, a, button, form, h1, input, label, noscript, p, toHtml, ul, (!))
 import Text.Blaze.Html5 qualified as H
-import Text.Blaze.Html5.Attributes (action, class_, href, method, name, placeholder, src, type_, value)
+import Text.Blaze.Html5.Attributes (action, class_, href, method, name, placeholder, type_, value)
 import Text.Blaze.Html5.Attributes qualified as A
 
 import Jukebox.HTML (buttonStyles, buttonStylesPrimary, classNames, frontMatter, hx, ws)
@@ -129,10 +129,10 @@ roomPage rid = do
             input ! type_ "hidden" ! name "action" ! value "set-video-id"
           button ! type_ "submit" ! classNames (buttonStyles <> ["rounded-l-none"]) $ "Set Video"
         p ! class_ "mt-4" $ "Currently listening:"
+        noscript "Sorry, this app requires JavaScript to function."
         ul ! class_ "list-disc list-inside ml-4" ! A.id "listeners" $ pass
         p ! class_ "mt-4" $ a ! class_ "text-blue-600 underline" ! href "/" $ "Leave"
-    script ! src "/static/room.js" $ pass
-    script ! src "https://www.youtube.com/iframe_api" $ pass
+      H.div ! A.id "player-state" $ pass
 
 staticFiles :: Server Raw
 staticFiles = serveDirectoryWebApp "web"

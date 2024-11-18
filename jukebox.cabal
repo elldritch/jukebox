@@ -72,9 +72,7 @@ library
 executable jukebox
   import:
     options
-    , base
     , relude
-    , safe-exceptions
 
   ghc-options:    -threaded
   build-depends:

@@ -35,11 +35,12 @@ frontMatter children = docTypeHtml ! lang "en" $ do
     meta ! name "description" ! content "Listen to music with your friends"
     script ! src "https://cdn.tailwindcss.com" $ pass
     script
-      ! src "https://unpkg.com/htmx.org@2.0.3"
-      ! customAttribute "integrity" "sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq"
-      ! customAttribute "crossorigin" "anonymous"
-      $ pass
+      ! src "https://unpkg.com/htmx.org@2.0.3/dist/htmx.js"
+      ! customAttribute "integrity" "sha384-BBDmZzVt6vjz5YbQqZPtFZW82o8QotoM7RUp5xOxV3nSJ8u2pSdtzFAbGKzTlKtg"
+      ! customAttribute "crossorigin" "anonymous" $ pass
     script ! src "https://unpkg.com/htmx-ext-ws@2.0.1/ws.js" $ pass
+    script ! src "/static/room.js" $ pass
+    script ! src "https://www.youtube.com/iframe_api" $ pass
   body ! hx "boost" "true" $ children
 
 classNames :: [AttributeValue] -> Attribute

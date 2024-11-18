@@ -13,9 +13,9 @@ import Relude
 import Relude.Extra.Map (delete, insert, keys, lookup, toPairs)
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel, link, wait)
+import Control.Concurrent.Async (async, cancel, link, link2, wait)
 import Control.Concurrent.STM (TQueue, newTQueue, readTQueue, writeTQueue)
-import Control.Exception.Safe (catch, throwIO)
+import Control.Exception.Safe (catch, catchAny, throwIO)
 import Data.Aeson (ToJSON (..), eitherDecode, withObject)
 import Data.Aeson.Types (Parser, Value, parseEither, parseFail, (.:))
 import Network.WebSockets (
@@ -29,9 +29,9 @@ import Network.WebSockets (
 import Network.WebSockets qualified as WS
 import Servant (FromHttpApiData)
 import System.IO.Unsafe (unsafePerformIO)
-import Text.Blaze.Html ((!))
+import Text.Blaze.Html (toValue, (!))
 import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
-import Text.Blaze.Html5 (li, toHtml)
+import Text.Blaze.Html5 (dataAttribute, li, toHtml)
 import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes qualified as A
 import Web.Sqids (SqidsOptions (..), defaultSqidsOptions, runSqids)
@@ -108,6 +108,8 @@ data Room = Room
 data ClientMessage
   = ClientListChanged
   | RequestVideoID {videoID :: Text}
+  | RequestPlay
+  | RequestPause
   deriving stock (Show, Eq)
 
 -- | Parse JSON client messages sent via WebSocket. These messages are all
@@ -119,6 +121,8 @@ parseClientMessage = withObject "ClientMessage" $ \o -> do
     "set-video-id" -> do
       videoID <- o .: "video-id"
       pure $ RequestVideoID{videoID}
+    "play" -> pure RequestPlay
+    "pause" -> pure RequestPause
     _ -> parseFail $ "invalid ClientMessage action: " <> show action
 
 -- | The possible messages that can be sent by the server. These are generally
@@ -139,7 +143,9 @@ renderServerMessage UpdateClientList{clients, you = ClientID you} =
   renderHtml $ H.div ! A.id "listeners" $ do
     forM_ clients $ \(ClientID cid) -> do
       li $ toHtml (cid <> if cid == you then " (you)" else "")
-renderServerMessage _ = undefined
+renderServerMessage SetVideoID{videoID} =
+  renderHtml $ H.div ! A.id "player-state" ! dataAttribute "video-id" (toValue videoID) $ pass
+renderServerMessage msg = error "Unimplemented server message: " <> show msg
 
 -- | Allocate a room in the TVar, and then fork a thread that manages the room.
 --
@@ -164,12 +170,33 @@ startRoom tvar = do
     msg <- atomically $ readTQueue roomInbox
     putStrLn $ "Got message for room " <> show roomID <> ": " <> show msg
     case msg of
+      -- Broadcast the new client list to all clients.
       (_, ClientListChanged) -> do
         atomically $ do
           room <- readRoom roomID tvar
-          forM_ (toPairs room.clientOutboxes) $ \(clientID, outbox) -> do
+          forM_ (toPairs room.clientOutboxes) $ \(clientID, outbox) ->
             writeTQueue outbox $ UpdateClientList{clients = keys room.clientOutboxes, you = clientID}
-      (_, RequestVideoID _) -> undefined
+      -- Broadcast the new video ID to all clients.
+      --
+      -- TODO: Implement authorization and room ownership for these controls.
+      (_, RequestVideoID videoID) -> do
+        atomically $ do
+          room <- readRoom roomID tvar
+          forM_ room.clientOutboxes $ \outbox -> writeTQueue outbox $ SetVideoID{videoID}
+      -- Broadcast the play command to all clients except the one that sent the
+      -- play command (they are already playing).
+      (origin, RequestPlay) -> do
+        atomically $ do
+          room <- readRoom roomID tvar
+          let outboxes = filter ((/= origin) . fst) $ toPairs room.clientOutboxes
+          forM_ outboxes $ \(_, outbox) -> writeTQueue outbox Play
+      -- Broadcast the pause command to all clients except the one that sent the
+      -- pause command (they are already paused).
+      (origin, RequestPause) -> do
+        atomically $ do
+          room <- readRoom roomID tvar
+          let outboxes = filter ((/= origin) . fst) $ toPairs room.clientOutboxes
+          forM_ outboxes $ \(_, outbox) -> writeTQueue outbox Pause
     roomLoop roomID roomInbox
 
 -- | Allocate a client in the TVar, and then fork a thread that manages the
@@ -199,8 +226,9 @@ startClient roomID tvar conn = do
     receiver <-
       async $
         receiveLoop conn' clientID roomInbox
-          `catch` handleDisconnect clientID roomInbox
-    link sender
+          `catch` handleGracefulDisconnect clientID roomInbox
+          `catchAny` handleCrashDisconnect clientID roomInbox
+    link2 sender receiver
     link receiver
     -- The receiver finishes once the client disconnects. After that happens,
     -- we need to clean up the spawned threads.
@@ -238,14 +266,23 @@ startClient roomID tvar conn = do
 
   -- On disconnect, remove the client from the room's client list, and send a
   -- message to the room to update the client list.
-  handleDisconnect :: ClientID -> TQueue (ClientID, ClientMessage) -> ConnectionException -> IO ()
-  handleDisconnect clientID roomInbox exc = case exc of
+  handleGracefulDisconnect :: ClientID -> TQueue (ClientID, ClientMessage) -> ConnectionException -> IO ()
+  handleGracefulDisconnect clientID roomInbox exc = case exc of
     CloseRequest _ _ -> do
-      putStrLn $ "Client " <> show clientID <> " disconnected"
-      atomically $ do
-        modifyRoom_ (\room -> room{clientOutboxes = delete clientID room.clientOutboxes}) roomID tvar
-        writeTQueue roomInbox (clientID, ClientListChanged)
+      putStrLn $ "Client " <> show clientID <> " gracefully disconnected"
+      removeClient clientID roomInbox
     exc' -> throwIO exc'
+
+  handleCrashDisconnect :: ClientID -> TQueue (ClientID, ClientMessage) -> SomeException -> IO ()
+  handleCrashDisconnect clientID roomInbox exc = do
+    putStrLn $ "WebSocket client " <> show clientID <> " is crashing: " <> displayException exc
+    removeClient clientID roomInbox
+    putStrLn $ "Client " <> show clientID <> " crashed and removed from client list"
+
+  removeClient :: ClientID -> TQueue (ClientID, ClientMessage) -> IO ()
+  removeClient clientID roomInbox = atomically $ do
+    modifyRoom_ (\room -> room{clientOutboxes = delete clientID room.clientOutboxes}) roomID tvar
+    writeTQueue roomInbox (clientID, ClientListChanged)
 
   showCtx :: ClientID -> String
   showCtx clientID = "client " <> show clientID <> " in room " <> show roomID
