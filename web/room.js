@@ -73,8 +73,8 @@ htmx.on('htmx:oobBeforeSwap', (e) => {
             playsinline: 1,
             enablejsapi: 1,
             disablekb: 1,
-            controls: 0,
-            autoplay: 1,
+            controls: 1,
+            autoplay: 0,
           },
           // Add event listeners to send player control events back through the
           // WebSocket.
