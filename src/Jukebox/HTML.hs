@@ -3,28 +3,13 @@ module Jukebox.HTML (
   classNames,
   buttonStylesPrimary,
   buttonStyles,
-  attr,
-  hx,
-  ws,
 ) where
 
 import Relude
 
-import Text.Blaze.Html5 (
-  Attribute,
-  AttributeValue,
-  Html,
-  body,
-  customAttribute,
-  docTypeHtml,
-  meta,
-  script,
-  textTag,
-  toValue,
-  (!),
- )
+import Text.Blaze.Html5 (Attribute, AttributeValue, Html, body, docTypeHtml, link, meta, (!))
 import Text.Blaze.Html5 qualified as H
-import Text.Blaze.Html5.Attributes (charset, class_, content, lang, name, src)
+import Text.Blaze.Html5.Attributes (charset, class_, content, href, lang, name, rel)
 
 frontMatter :: Html -> Html
 frontMatter children = docTypeHtml ! lang "en" $ do
@@ -33,15 +18,8 @@ frontMatter children = docTypeHtml ! lang "en" $ do
     meta ! name "viewport" ! content "width=device-width, initial-scale=1"
     H.title "Jukebox"
     meta ! name "description" ! content "Listen to music with your friends"
-    script ! src "https://cdn.tailwindcss.com" $ pass
-    script
-      ! src "https://unpkg.com/htmx.org@2.0.3/dist/htmx.js"
-      ! customAttribute "integrity" "sha384-BBDmZzVt6vjz5YbQqZPtFZW82o8QotoM7RUp5xOxV3nSJ8u2pSdtzFAbGKzTlKtg"
-      ! customAttribute "crossorigin" "anonymous" $ pass
-    script ! src "https://unpkg.com/htmx-ext-ws@2.0.1/ws.js" $ pass
-    script ! src "/static/room.js" $ pass
-    script ! src "https://www.youtube.com/iframe_api" $ pass
-  body ! hx "boost" "true" $ children
+    link ! rel "stylesheet" ! href "/static/styles.css"
+  body children
 
 classNames :: [AttributeValue] -> Attribute
 classNames = class_ . foldl' (\a b -> a <> " " <> b) ""
@@ -78,12 +56,3 @@ buttonStyles =
        , "ring-inset"
        , "ring-gray-300"
        ]
-
-hx :: Text -> Text -> Attribute
-hx tag = attr ("hx-" <> tag)
-
-ws :: Text -> Text -> Attribute
-ws tag = attr ("ws-" <> tag)
-
-attr :: Text -> Text -> Attribute
-attr tag value = customAttribute (textTag tag) (toValue value)
