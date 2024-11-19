@@ -58,6 +58,7 @@ library
     , servant-server  ==0.20.2
     , sqids           ==0.2.2.0
     , stm             ==2.5.1.0
+    , time            ==1.12.2
     , wai-websockets  ==3.0.1.2
     , websockets      ==0.13.0.0
 

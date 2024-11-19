@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-ambiguous-fields #-}
+
 module Jukebox.Rooms (
   RoomID,
   ClientID,
@@ -18,6 +20,9 @@ import Control.Concurrent.STM (TQueue, newTQueue, readTQueue, writeTQueue)
 import Control.Exception.Safe (catch, catchAny, throwIO)
 import Data.Aeson (ToJSON (..), eitherDecode, withObject)
 import Data.Aeson.Types (Parser, Value, parseEither, parseFail, (.:))
+import Data.Time (UTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import GHC.Show qualified as Show
 import Network.WebSockets (
   Connection,
   ConnectionException (..),
@@ -81,15 +86,12 @@ readRoom' roomID tvar = do
   let room = fromMaybe (bug $ InvariantViolated $ "Room " <> show roomID <> " does not exist") $ lookup roomID rooms
   pure (r, room)
 
-modifyRoom :: (Room -> (Room, a)) -> RoomID -> TVar Rooms -> STM a
+modifyRoom :: (Room -> Room) -> RoomID -> TVar Rooms -> STM Room
 modifyRoom f roomID tvar = do
   (Rooms rooms, room) <- readRoom' roomID tvar
-  let (room', a) = f room
+  let room' = f room
   writeTVar tvar $ Rooms $ insert roomID room' rooms
-  pure a
-
-modifyRoom_ :: (Room -> Room) -> RoomID -> TVar Rooms -> STM ()
-modifyRoom_ f = modifyRoom $ \r -> (f r, ())
+  pure room'
 
 -- | The state of a single room.
 data Room = Room
@@ -99,17 +101,38 @@ data Room = Room
   -- ^ The inbox for this room. Clients send their messages to the inbox of
   -- their room, along with a ClientID indicating who sent the message. This way
   -- the room manager can handle each message sequentially.
+  , videoID :: Maybe Text
+  -- ^ The ID of the currently playing video.
+  , playbackStatus :: PlaybackStatus
+  -- ^ The playback status of the currently playing video.
   }
+
+instance Show.Show Room where
+  show Room{clientOutboxes, videoID, playbackStatus} =
+    "Room {clientOutboxes = "
+      <> "fromList ["
+      <> intercalate "," ((\(cid, _) -> "(" <> show cid <> ", _)") <$> toPairs clientOutboxes)
+      <> "]"
+      <> ", roomInbox = _"
+      <> ", videoID = "
+      <> show videoID
+      <> ", playbackStatus = "
+      <> show playbackStatus
+      <> "}"
+
+data PlaybackStatus = Playing {started :: UTCTime} | Stopped
+  deriving stock (Show, Eq)
 
 -- | The possible messages that can be sent by a client. These are generally
 -- sent via HTMX's ws-send on the client side, and so are parsed from JSON
 -- messages. Some of them are synthetically constructed by the backend (e.g.
 -- when clients connect or disconnect).
 data ClientMessage
-  = ClientListChanged
+  = ClientJoined
+  | ClientLeft
   | RequestVideoID {videoID :: Text}
   | RequestPlay
-  | RequestPause
+  | RequestStop
   deriving stock (Show, Eq)
 
 -- | Parse JSON client messages sent via WebSocket. These messages are all
@@ -122,7 +145,7 @@ parseClientMessage = withObject "ClientMessage" $ \o -> do
       videoID <- o .: "video-id"
       pure $ RequestVideoID{videoID}
     "play" -> pure RequestPlay
-    "pause" -> pure RequestPause
+    "stop" -> pure RequestStop
     _ -> parseFail $ "invalid ClientMessage action: " <> show action
 
 -- | The possible messages that can be sent by the server. These are generally
@@ -131,10 +154,7 @@ parseClientMessage = withObject "ClientMessage" $ \o -> do
 -- actions in the player.
 data ServerMessage
   = UpdateClientList {clients :: [ClientID], you :: ClientID}
-  | SetVideoID {videoID :: Text}
-  | Play
-  | Pause
-  | Seek {seconds :: Double}
+  | SetPlayer {videoID :: Text, playbackStatus :: PlaybackStatus}
   deriving stock (Show, Eq, Generic)
 
 -- | Render a message for sending to the client.
@@ -143,9 +163,21 @@ renderServerMessage UpdateClientList{clients, you = ClientID you} =
   renderHtml $ H.div ! A.id "listeners" $ do
     forM_ clients $ \(ClientID cid) -> do
       li $ toHtml (cid <> if cid == you then " (you)" else "")
-renderServerMessage SetVideoID{videoID} =
-  renderHtml $ H.div ! A.id "player-state" ! dataAttribute "video-id" (toValue videoID) $ pass
-renderServerMessage msg = error "Unimplemented server message: " <> show msg
+renderServerMessage SetPlayer{videoID, playbackStatus} =
+  renderHtml
+    $ H.div
+      ! A.id "player-state"
+      ! dataAttribute "video-id" (toValue videoID)
+      `addAttrs` playbackAttrs
+    $ pass
+ where
+  addAttrs = foldl' (!)
+  playbackAttrs = case playbackStatus of
+    Playing{started} ->
+      [ dataAttribute "playback-status" "playing"
+      , dataAttribute "playback-started" (toValue @Int $ truncate $ utcTimeToPOSIXSeconds started)
+      ]
+    Stopped -> [dataAttribute "playback-status" "stopped"]
 
 -- | Allocate a room in the TVar, and then fork a thread that manages the room.
 --
@@ -158,7 +190,8 @@ startRoom tvar = do
   putStrLn $ "Starting new room " <> show roomID
   roomInbox <- atomically $ do
     roomInbox <- newTQueue
-    modifyTVar' tvar $ \(Rooms rooms) -> Rooms $ insert roomID Room{clientOutboxes = mempty, roomInbox} rooms
+    let newRoom = Room{clientOutboxes = mempty, roomInbox, videoID = Nothing, playbackStatus = Stopped}
+    modifyTVar' tvar $ \(Rooms rooms) -> Rooms $ insert roomID newRoom rooms
     pure roomInbox
   roomManager <- async $ roomLoop roomID roomInbox
   link roomManager
@@ -169,34 +202,64 @@ startRoom tvar = do
     putStrLn $ "Waiting for messages for room " <> show roomID
     msg <- atomically $ readTQueue roomInbox
     putStrLn $ "Got message for room " <> show roomID <> ": " <> show msg
-    case msg of
-      -- Broadcast the new client list to all clients.
-      (_, ClientListChanged) -> do
+    room' <- case msg of
+      -- Broadcast the new client list to all clients, and send the current
+      -- playback state to the new client. The client handler is responsible for
+      -- having already updated the client list on join.
+      (joined, ClientJoined) -> do
+        atomically $ do
+          room <- readRoom roomID tvar
+          forM_ (toPairs room.clientOutboxes) $ \(clientID, outbox) -> do
+            writeTQueue outbox $ UpdateClientList{clients = keys room.clientOutboxes, you = clientID}
+            case room.videoID of
+              Just videoID | clientID == joined -> writeTQueue outbox $ SetPlayer{videoID, playbackStatus = room.playbackStatus}
+              _ -> pass
+          pure room
+
+      -- Broadcast the new client list to all clients. The client handler is
+      -- responsible for having already updated the client list on leave.
+      (_, ClientLeft) -> do
         atomically $ do
           room <- readRoom roomID tvar
           forM_ (toPairs room.clientOutboxes) $ \(clientID, outbox) ->
             writeTQueue outbox $ UpdateClientList{clients = keys room.clientOutboxes, you = clientID}
-      -- Broadcast the new video ID to all clients.
-      --
-      -- TODO: Implement authorization and room ownership for these controls.
+          pure room
+
+      -- Update the room's video ID and playback status and broadcast the new
+      -- player settings to all clients.
       (_, RequestVideoID videoID) -> do
         atomically $ do
-          room <- readRoom roomID tvar
-          forM_ room.clientOutboxes $ \outbox -> writeTQueue outbox $ SetVideoID{videoID}
-      -- Broadcast the play command to all clients except the one that sent the
-      -- play command (they are already playing).
+          r@Room{clientOutboxes, playbackStatus} <- modifyRoom (\r -> r{videoID = Just videoID, playbackStatus = Stopped}) roomID tvar
+          forM_ clientOutboxes $ \outbox -> writeTQueue outbox $ SetPlayer{videoID, playbackStatus}
+          pure r
+
+      -- Check that there is a video ID set. If so, update the room's playback
+      -- status and broadcast the new player settings to all clients except the
+      -- one that sent the play command (they are already playing).
       (origin, RequestPlay) -> do
+        now <- getCurrentTime
         atomically $ do
-          room <- readRoom roomID tvar
-          let outboxes = filter ((/= origin) . fst) $ toPairs room.clientOutboxes
-          forM_ outboxes $ \(_, outbox) -> writeTQueue outbox Play
-      -- Broadcast the pause command to all clients except the one that sent the
-      -- pause command (they are already paused).
-      (origin, RequestPause) -> do
+          r@Room{clientOutboxes, playbackStatus} <- modifyRoom (\r -> r{playbackStatus = Playing{started = now}}) roomID tvar
+          case r.videoID of
+            Just videoID -> do
+              let outboxes = filter ((/= origin) . fst) $ toPairs clientOutboxes
+              forM_ outboxes $ \(_, outbox) -> writeTQueue outbox SetPlayer{videoID, playbackStatus}
+            Nothing -> pass
+          pure r
+
+      -- Check that there is a video ID set. If so, update the room's playback
+      -- status and broadcast the new player settings to all clients except the
+      -- one that sent the stop command (they are already stopped).
+      (origin, RequestStop) -> do
         atomically $ do
-          room <- readRoom roomID tvar
-          let outboxes = filter ((/= origin) . fst) $ toPairs room.clientOutboxes
-          forM_ outboxes $ \(_, outbox) -> writeTQueue outbox Pause
+          r@Room{clientOutboxes, playbackStatus} <- modifyRoom (\r -> r{playbackStatus = Stopped}) roomID tvar
+          case r.videoID of
+            Just videoID -> do
+              let outboxes = filter ((/= origin) . fst) $ toPairs clientOutboxes
+              forM_ outboxes $ \(_, outbox) -> writeTQueue outbox SetPlayer{videoID, playbackStatus}
+            Nothing -> pass
+          pure r
+    putStrLn $ "Room state after handling message: " <> show room'
     roomLoop roomID roomInbox
 
 -- | Allocate a client in the TVar, and then fork a thread that manages the
@@ -211,9 +274,9 @@ startClient roomID tvar conn = do
   putStrLn $ "Handling new client " <> show clientID
   (clientOutbox, roomInbox) <- atomically $ do
     clientOutbox <- newTQueue
-    roomInbox <-
+    Room{roomInbox} <-
       modifyRoom
-        (\room -> (room{clientOutboxes = insert clientID clientOutbox room.clientOutboxes}, room.roomInbox))
+        (\room -> (room{clientOutboxes = insert clientID clientOutbox room.clientOutboxes}))
         roomID
         tvar
     pure (clientOutbox, roomInbox)
@@ -221,7 +284,7 @@ startClient roomID tvar conn = do
     -- On join, send a message to the room to update the client list.
     sender <-
       async $
-        atomically (writeTQueue roomInbox (clientID, ClientListChanged))
+        atomically (writeTQueue roomInbox (clientID, ClientJoined))
           >> sendLoop conn' clientID clientOutbox
     receiver <-
       async $
@@ -271,6 +334,7 @@ startClient roomID tvar conn = do
     CloseRequest _ _ -> do
       putStrLn $ "Client " <> show clientID <> " gracefully disconnected"
       removeClient clientID roomInbox
+      putStrLn $ "Client " <> show clientID <> " removed from client list after graceful disconnect"
     exc' -> throwIO exc'
 
   handleCrashDisconnect :: ClientID -> TQueue (ClientID, ClientMessage) -> SomeException -> IO ()
@@ -281,8 +345,8 @@ startClient roomID tvar conn = do
 
   removeClient :: ClientID -> TQueue (ClientID, ClientMessage) -> IO ()
   removeClient clientID roomInbox = atomically $ do
-    modifyRoom_ (\room -> room{clientOutboxes = delete clientID room.clientOutboxes}) roomID tvar
-    writeTQueue roomInbox (clientID, ClientListChanged)
+    void $ modifyRoom (\room -> room{clientOutboxes = delete clientID room.clientOutboxes}) roomID tvar
+    writeTQueue roomInbox (clientID, ClientLeft)
 
   showCtx :: ClientID -> String
   showCtx clientID = "client " <> show clientID <> " in room " <> show roomID
