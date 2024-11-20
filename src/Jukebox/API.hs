@@ -21,7 +21,7 @@ import Servant.HTML.Blaze (HTML)
 import Servant.Server (Application, Handler, Server, ServerError (..), err303, hoistServer, serve)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
 import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
-import Text.Blaze.Html5 (Html, a, button, form, h1, input, label, noscript, p, script, toHtml, (!))
+import Text.Blaze.Html5 (Html, a, button, code, form, h1, input, label, noscript, p, script, toHtml, (!))
 import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes (action, class_, href, method, name, placeholder, src, type_)
 import Text.Blaze.Html5.Attributes qualified as A
@@ -120,7 +120,9 @@ roomPage rid = do
   pure $ frontMatter $ do
     H.div $ do
       H.div ! class_ "mx-auto max-w-md" $ do
-        h1 ! class_ "mt-8 text-2xl inline-block" $ toHtml $ "Room " <> toText roomID
+        h1 ! class_ "mt-8 text-2xl inline-block" $ do
+          "Room "
+          code ! class_ "select-all" $ toHtml $ toText roomID
         p ! class_ "ml-2 inline-block" $ a ! class_ "text-blue-600 underline" ! href "/" $ "Back"
       noscript $ do
         p ! class_ "mt-4" $ "Sorry, this app requires JavaScript to function."
