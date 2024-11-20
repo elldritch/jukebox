@@ -188,7 +188,7 @@ export default function Room() {
   const [addToQueueInput, setAddToQueueInput] = useState("");
   const [queuedVideos, setQueuedVideos] = useState<QueuedVideo[]>([]);
 
-  console.log("Tick", { playingDesired, playingActual });
+  // console.log("Tick", { playingDesired, playingActual });
 
   // Render disconnected state. Note that all returns must occur after all hooks
   // are called, so that all hooks are called in the same order every render.
@@ -247,9 +247,9 @@ export default function Room() {
         width="100%"
         volume={playerVolume}
         muted={playerMuted}
-        onReady={({ target }) => {
-          debug("onReady", { playingDesired, playingActual });
-          playerRef.current = target;
+        onReady={(e) => {
+          debug("onReady", { e, playingDesired, playingActual });
+          playerRef.current = e.target;
           setPlayerReady(true);
           if (playingDesired) {
             setPlayingActual(true);
