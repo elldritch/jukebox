@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 
 import useWebSocket, { ReadyState } from "react-use-websocket";
-import ReactPlayer from "react-player";
+// import YouTubePlayer from "youtube-player";
 import formatDuration from "format-duration";
+import Player, { PlayerController } from "./Player";
 
 // TODO: Can we generate these type definitions from the Aeson instances?
 type ClientID = string;
@@ -57,18 +58,16 @@ const SECONDS_DRIFT_ALLOWED = 2;
 // TODO: Turn this off in production.
 // @ts-expect-error
 const ALWAYS_DEBUG = process.env.NODE_ENV === "development";
-
+const debugging = () => ALWAYS_DEBUG || (window as any)["jukeboxRuntimeDebug"] === true;
 function debug(...args: any[]) {
-  if (ALWAYS_DEBUG || (window as any)["jukeboxRuntimeDebug"] === true) {
+  if (debugging()) {
     console.log(...args);
   }
 }
 
 export default function Room() {
   // Connect to WebSocket.
-  const { sendJsonMessage, lastJsonMessage, readyState, getWebSocket } = useWebSocket<ServerMessage>(
-    document.location.pathname
-  );
+  const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket<ServerMessage>(document.location.pathname);
 
   useEffect(() => {
     if (lastJsonMessage !== null) {
@@ -101,28 +100,26 @@ export default function Room() {
               // Allow clients to drift a tiny little bit. Otherwise they will
               // jump a bit to try and snap to the "correct" seek.
               if (Math.abs(seekTarget - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
-                playerRef.current?.seekTo(seekTarget, "seconds");
+                playerRef.current?.seekTo(seekTarget, true);
                 setActiveVideoPlayedSeconds(seekTarget);
               }
 
+              console.log("SetPlayer.Playing: setPlayingDesired(true)");
               setPlayingDesired(true);
-              if (playerReady) {
-                setPlayingActual(true);
-              }
+              setPlayingActual(true);
               break;
             }
             case "Paused": {
               // Allow clients to drift a tiny little bit. Otherwise they will
               // jump a bit on pause to try and snap to the "correct" seek.
               if (Math.abs(msg.playbackStatus.atSeekSeconds - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
-                playerRef.current?.seekTo(msg.playbackStatus.atSeekSeconds, "seconds");
+                playerRef.current?.seekTo(msg.playbackStatus.atSeekSeconds, true);
                 setActiveVideoPlayedSeconds(msg.playbackStatus.atSeekSeconds);
               }
 
+              console.log("SetPlayer.Paused: setPlayingDesired(true)");
               setPlayingDesired(false);
-              if (playerReady) {
-                setPlayingActual(false);
-              }
+              setPlayingActual(false);
               break;
             }
             default: {
@@ -138,10 +135,9 @@ export default function Room() {
           setPlayerHostID("");
           setActiveVideoPlayedSeconds(0);
           setActiveVideoDuration(undefined);
+          console.log("UnsetPlayer: setPlayingDesired(true)");
           setPlayingDesired(false);
-          if (playerReady) {
-            setPlayingActual(false);
-          }
+          setPlayingActual(false);
           break;
         }
         default: {
@@ -152,19 +148,16 @@ export default function Room() {
     }
   }, [lastJsonMessage]);
 
-  // Hooks related to the client list.
-  const [clients, setClients] = useState<Client[]>([]);
-  const [myClientID, setMyClientID] = useState("");
-  const [newHandleInput, setNewHandleInput] = useState("");
-
   // Hooks related to player health.
-  const playerRef = useRef<ReactPlayer>(null);
+  // const playerRef = useRef<ReturnType<typeof YouTubePlayer> | null>(null);
+  const playerRef = useRef<PlayerController | null>(null);
+  const [playerLoaded, setPlayerLoaded] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState<{} | undefined>(undefined);
 
   // Hooks related to playback.
   const [showAutoplayBlockedDialog, setShowAutoplayBlockedDialog] = useState(false);
-  const [playerVolume, setPlayerVolume] = useState<number | null>(null);
+  const [playerVolume, setPlayerVolume] = useState<number | undefined>(undefined);
   const [playerMuted, setPlayerMuted] = useState(false);
   // The desired `playing` status. We maintain this to quickly override user
   // inputs in the player using `setTimeout(..., 1)` when needed.
@@ -186,9 +179,16 @@ export default function Room() {
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekTarget, setSeekTarget] = useState(0);
 
+  // Hooks related to the client list.
+  const [clients, setClients] = useState<Client[]>([]);
+  const [myClientID, setMyClientID] = useState("");
+  const [newHandleInput, setNewHandleInput] = useState("");
+
   // Hooks related to the queue.
   const [addToQueueInput, setAddToQueueInput] = useState("");
   const [queuedVideos, setQueuedVideos] = useState<QueuedVideo[]>([]);
+
+  console.log("Tick", { playingDesired, playingActual });
 
   // Render disconnected state. Note that all returns must occur after all hooks
   // are called, so that all hooks are called in the same order every render.
@@ -237,22 +237,23 @@ export default function Room() {
 
   return (
     <div className="mx-auto max-w-2xl mt-8">
-      <ReactPlayer
-        ref={playerRef}
-        url={playerURL}
+      {/* TODO: Replace this with some other YouTube player that autoblocks
+          less, try to replicate the functionality (maybe by looking in the
+          react-player library source), and see if that solves the autoblocking
+          issues. */}
+      <Player
+        videoId={playerURL}
         playing={playingActual}
         width="100%"
-        playsinline
-        // The ReactPlayer type declaration for `volume` is wrong.
-        volume={playerVolume as number | undefined}
+        volume={playerVolume}
         muted={playerMuted}
-        onReady={(e) => {
-          debug("ready", e);
+        onReady={({ target }) => {
+          debug("onReady", { playingDesired, playingActual });
+          playerRef.current = target;
           setPlayerReady(true);
           if (playingDesired) {
             setPlayingActual(true);
           }
-          // onDuration is just wrong sometimes for reasons that puzzle me.
           const duration = playerRef.current?.getDuration();
           if (duration) {
             setActiveVideoDuration(duration);
@@ -265,14 +266,8 @@ export default function Room() {
             }
           }
         }}
-        onStart={() => {
-          debug("start");
-          sendJsonMessage({
-            tag: "PlaybackStarted",
-          });
-        }}
         onPlay={() => {
-          debug("play");
+          debug("onPlay", { playingActual, playingDesired });
           setPlayingActual(true);
           if (!playingDesired) {
             setTimeout(() => setPlayingActual(false), 1);
@@ -281,13 +276,21 @@ export default function Room() {
             tag: "PlaybackStarted",
           });
         }}
-        // We don't use onSeek because this event does not fire for YouTube:
-        // https://github.com/cookpete/react-player/issues/1243
+        onPause={() => {
+          debug("onPause", { playingDesired });
+          // Synchronize `playingActual` with the actual player state.
+          setPlayingActual(false);
+
+          // If the player _shouldn't_ be paused, immediately unpause it on
+          // the next tick.
+          if (playingDesired) {
+            setTimeout(() => setPlayingActual(true), 1);
+          }
+        }}
         onProgress={({ playedSeconds }) => {
           // debug("progress", playedSeconds);
           setActiveVideoPlayedSeconds(playedSeconds);
 
-          // onDuration is just wrong sometimes for reasons that puzzle me.
           const duration = playerRef.current?.getDuration();
           if (duration) {
             setActiveVideoDuration(duration);
@@ -301,7 +304,7 @@ export default function Room() {
           }
         }}
         onEnded={() => {
-          debug("ended");
+          debug("onEnded");
           if (activeVideoDuration) {
             setActiveVideoPlayedSeconds(activeVideoDuration);
           }
@@ -309,43 +312,23 @@ export default function Room() {
             tag: "PlaybackFinished",
           });
         }}
+        onAutoplayBlocked={() => {
+          // If this site does not have autoplay permissions for this user,
+          // begin autoplay on mute.
+          debug("onAutoplayBlocked");
+          setShowAutoplayBlockedDialog(true);
+          setPlayingActual(false);
+          setPlayerMuted(true);
+          setTimeout(() => {
+            console.log("seeked", { activeVideoPlayedSeconds });
+            playerRef.current?.seekTo(activeVideoPlayedSeconds, true);
+            setPlayingActual(true);
+          }, 1);
+        }}
         onError={(err) => {
           console.error(err);
           setPlayerError(err);
         }}
-        onPause={() => {
-          debug("pause");
-          // Synchronize `playingActual` with the actual player state.
-          setPlayingActual(false);
-
-          // If the player _shouldn't_ be paused, immediately unpause it on
-          // the next tick.
-          if (playingDesired) {
-            setTimeout(() => setPlayingActual(true), 1);
-          }
-        }}
-        config={{
-          youtube: {
-            playerVars: {
-              disablekb: 1,
-            },
-            onUnstarted: () => {
-              // If this site does not have autoplay permissions for this user,
-              // begin autoplay on mute.
-              //
-              // TODO: Is there a way to detect this for other players?
-              debug("unstarted");
-              setShowAutoplayBlockedDialog(true);
-              setPlayingActual(false);
-              setPlayerMuted(true);
-              setTimeout(() => {
-                playerRef.current?.seekTo(activeVideoPlayedSeconds, "seconds");
-                setPlayingActual(true);
-              }, 1);
-            },
-          },
-        }}
-
         // TODO: Add callbacks for onBuffer and onBufferEnd and use them for
         // synchronization after buffering.
       />
@@ -381,8 +364,9 @@ export default function Room() {
                     className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-900 shadow-sm hover:bg-gray-200"
                     onClick={() => {
                       const newPlayingDesired = !playingDesired;
+                      console.log("TogglePlay.onClick: setPlayingDesired", { newPlayingDesired });
                       setPlayingDesired(newPlayingDesired);
-                      if (playerReady && newPlayingDesired !== playingActual) {
+                      if (newPlayingDesired !== playingActual) {
                         setPlayingActual(newPlayingDesired);
                       }
                       if (newPlayingDesired) {
@@ -417,7 +401,7 @@ export default function Room() {
                     setSeekTarget(Number(e.target.value));
                   }}
                   onMouseUp={() => {
-                    playerRef.current?.seekTo(seekTarget);
+                    playerRef.current?.seekTo(seekTarget, true);
                     setActiveVideoPlayedSeconds(seekTarget);
                     setIsSeeking(false);
                     if (playingDesired) {

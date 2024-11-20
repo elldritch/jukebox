@@ -216,9 +216,10 @@ startRoom tvar = do
           Nothing -> pass
         pure room
 
-      -- Broadcast the new client list to all clients. If there is an active
-      -- video and the departing client is the submitter of the active video, go
-      -- to the next video. If there is an active video and the departing client
+      -- Broadcast the new client list to all clients. Clear all videos in the
+      -- queue of the departing client. If there is an active video and the
+      -- departing client is the submitter of the active video, go to the next
+      -- remaining video. If there is an active video and the departing client
       -- is not the submitter, remove the departing client from the client
       -- finished status map.
       --
@@ -234,7 +235,7 @@ startRoom tvar = do
               if video.submitter == leaving
                 then
                   -- If the submitter left, move to the next video in the queue.
-                  case queuedVideos of
+                  case filter ((/= leaving) . (.submitter)) queuedVideos of
                     -- If there are videos left, move to the next video and send UpdateQueue and SetPlayer.
                     QueuedVideo{videoURL, submitter} : queuedVideos' -> do
                       let room' =
@@ -249,7 +250,7 @@ startRoom tvar = do
                                       }
                               , queuedVideos = queuedVideos'
                               }
-                      broadcast room' UpdateQueue {videos = queuedVideos'}
+                      broadcast room' UpdateQueue{videos = queuedVideos'}
                       broadcast room' SetPlayer{videoURL, playbackStatus = Playing{fromSeekSeconds = 0, started = now}, submitter}
                       pure room'
                     -- If there are no videos left, clear the active video and send UnsetPlayer.
@@ -397,7 +398,7 @@ startRoom tvar = do
                                     }
                             , queuedVideos = queuedVideos'
                             }
-                    broadcast room' UpdateQueue {videos = queuedVideos'}
+                    broadcast room' UpdateQueue{videos = queuedVideos'}
                     broadcast room' SetPlayer{videoURL, playbackStatus = Playing{fromSeekSeconds = 0, started = now}, submitter}
                     pure room'
                   -- If there are no videos left, clear the active video and send UnsetPlayer.

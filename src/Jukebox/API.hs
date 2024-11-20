@@ -128,6 +128,7 @@ roomPage rid = do
         p ! class_ "mt-4" $ "Sorry, this app requires JavaScript to function."
       H.div ! A.id "react-root" $ pass
     script ! src "/static/room.js" $ pass
+    script ! src "https://www.youtube.com/iframe_api" $ pass
 
 staticFiles :: Server Raw
 staticFiles = serveDirectoryWebApp "static"
