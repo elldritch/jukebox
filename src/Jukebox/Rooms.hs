@@ -12,7 +12,7 @@ module Jukebox.Rooms (
 ) where
 
 import Relude
-import Relude.Extra.Map (delete, insert, keys, lookup, toPairs)
+import Relude.Extra.Map (delete, elems, insert, keys, lookup, size, toPairs)
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, cancel, link, link2, wait)
@@ -118,6 +118,7 @@ data ActiveVideo = Video
   , submitter :: ClientID
   , playbackStatus :: PlaybackStatus
   , finishedClients :: Map ClientID Bool
+  , skipVotes :: Map ClientID Bool
   }
   deriving stock (Show, Eq)
 
@@ -144,6 +145,7 @@ data ClientMessage
   | RequestPause {atSeekSeconds :: Int}
   | PlaybackStarted
   | PlaybackFinished
+  | Vote {skip :: Bool}
   deriving stock (Show, Eq, Generic)
   deriving anyclass (FromJSON)
 
@@ -151,6 +153,7 @@ data ClientMessage
 data ServerMessage
   = UpdateClientList {clients :: [ClientListItem], you :: ClientListItem}
   | UpdateQueue {videos :: [QueuedVideo]}
+  | UpdateVotes {skips :: Int}
   | SetPlayer {videoURL :: Text, playbackStatus :: PlaybackStatus, submitter :: ClientID}
   | UnsetPlayer
   deriving stock (Show, Eq, Generic)
@@ -210,9 +213,11 @@ startRoom tvar = do
         broadcastClientList room
         -- For the new client, send the current queue.
         unless (null room.queuedVideos) $ writeTQueue outbox $ UpdateQueue{videos = room.queuedVideos}
-        -- For the new client, send the current playback state.
+        -- For the new client, send the current playback state and votes.
         case room.activeVideo of
-          Just video -> writeTQueue outbox $ SetPlayer{videoURL = video.videoURL, playbackStatus = video.playbackStatus, submitter = video.submitter}
+          Just video -> do
+            writeTQueue outbox $ SetPlayer{videoURL = video.videoURL, playbackStatus = video.playbackStatus, submitter = video.submitter}
+            writeTQueue outbox $ UpdateVotes{skips = length $ filter id $ elems video.skipVotes}
           Nothing -> pass
         pure room
 
@@ -247,6 +252,7 @@ startRoom tvar = do
                                       , playbackStatus = Playing{fromSeekSeconds = 0, started = now}
                                       , submitter
                                       , finishedClients = mempty
+                                      , skipVotes = mempty
                                       }
                               , queuedVideos = queuedVideos'
                               }
@@ -258,8 +264,12 @@ startRoom tvar = do
                       broadcast room UnsetPlayer
                       pure room{activeVideo = Nothing, queuedVideos = []}
                 else do
-                  -- Just remove the leaving client from the finished status map.
-                  let video' = video{finishedClients = delete leaving video.finishedClients}
+                  -- Just remove the leaving client from the finished and votes maps.
+                  let video' =
+                        video
+                          { finishedClients = delete leaving video.finishedClients
+                          , skipVotes = delete leaving video.skipVotes
+                          }
                   pure room{activeVideo = Just video'}
           broadcastClientList room'
           writeTVar tvar $ Rooms $ insert roomID room' rooms
@@ -301,6 +311,7 @@ startRoom tvar = do
                         , submitter
                         , playbackStatus = Playing{started = now, fromSeekSeconds = 0}
                         , finishedClients = mempty
+                        , skipVotes = mempty
                         }
                     room' = room{activeVideo = Just video}
                 writeTVar tvar $ Rooms $ insert roomID room' rooms
@@ -395,6 +406,7 @@ startRoom tvar = do
                                     , playbackStatus = Playing{fromSeekSeconds = 0, started = now}
                                     , submitter
                                     , finishedClients = mempty
+                                    , skipVotes = mempty
                                     }
                             , queuedVideos = queuedVideos'
                             }
@@ -408,6 +420,55 @@ startRoom tvar = do
               else do
                 -- If not everyone is done, just set the watcher as finished.
                 pure room{activeVideo = Just video{finishedClients = finishedClients'}}
+          writeTVar tvar $ Rooms $ insert roomID room' rooms
+          pure room'
+
+      -- Update the skip votes of the active video. If the majority of
+      -- non-submitter clients vote to skip, move to the next video in the
+      -- queue.
+      (voter, m@Vote{skip}) -> do
+        now <- getCurrentTime
+        withActiveVideo voter m $ \(Rooms rooms) room@Room{clients, queuedVideos} video@Video{skipVotes} -> do
+          let skipVotes' = insert voter skip skipVotes
+              -- TODO: Rather than filtering out the submitter vote from the
+              -- ayes, we should prevent the submitter from submitting a vote in
+              -- the first place, and log if they do so (since the UI normally
+              -- does not allow this). This is too annoying to implement using
+              -- the current callbacks, but definitely make sure to do this once
+              -- this is refactored into `ExceptT` guard actions.
+              ayes = length $ filter id $ elems $ delete video.submitter skipVotes'
+          room' <-
+            if ayes > ((size clients - 1) `div` 2)
+              then
+                -- With sufficient skips, move to the next video in the queue.
+                case queuedVideos of
+                  -- If there are videos left, move to the next video and send UpdateQueue and SetPlayer.
+                  QueuedVideo{videoURL, submitter} : queuedVideos' -> do
+                    let room' =
+                          room
+                            { activeVideo =
+                                Just
+                                  Video
+                                    { videoURL
+                                    , playbackStatus = Playing{fromSeekSeconds = 0, started = now}
+                                    , submitter
+                                    , finishedClients = mempty
+                                    , skipVotes = mempty
+                                    }
+                            , queuedVideos = queuedVideos'
+                            }
+                    broadcast room' UpdateQueue{videos = queuedVideos'}
+                    broadcast room' SetPlayer{videoURL, playbackStatus = Playing{fromSeekSeconds = 0, started = now}, submitter}
+                    pure room'
+                  -- If there are no videos left, clear the active video and send UnsetPlayer.
+                  [] -> do
+                    broadcast room UnsetPlayer
+                    pure room{activeVideo = Nothing, queuedVideos = []}
+              else do
+                -- If not enough skips, just update the vote count and send
+                -- UpdateVotes to inform the clients.
+                broadcast room UpdateVotes{skips = ayes}
+                pure room{activeVideo = Just video{skipVotes = skipVotes'}}
           writeTVar tvar $ Rooms $ insert roomID room' rooms
           pure room'
 

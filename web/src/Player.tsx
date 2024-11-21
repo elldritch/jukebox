@@ -1,14 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 
-// TODO: Turn this off in production.
-// @ts-expect-error
-const ALWAYS_DEBUG = process.env.NODE_ENV === "development";
-const debugging = () => ALWAYS_DEBUG || (window as any)["jukeboxRuntimeDebug"] === true;
-function debug(...args: any[]) {
-  if (debugging()) {
-    console.log(...args);
-  }
-}
+import { debug, debugging } from "./debug";
 
 export type PlayerController = {
   seekTo(seconds: number, allowSeekAhead: true): void;
@@ -18,7 +10,6 @@ export type PlayerController = {
 export type PlayerProps = {
   videoId: string;
   playing: boolean;
-  width?: String;
   volume?: number;
   muted?: boolean;
   onReady?(e: { target: PlayerController }): void;
@@ -27,24 +18,12 @@ export type PlayerProps = {
   onProgress?(e: { playedSeconds: number }): void;
   onEnded?(): void;
   onAutoplayBlocked?(): void;
-  onError?(e: { data: number }): void;
+  onError?(e: { code: number; message: string }): void;
 };
 
 export default function Player(props: PlayerProps) {
-  const {
-    videoId,
-    playing,
-    width,
-    volume,
-    muted,
-    onReady,
-    onPlay,
-    onPause,
-    onProgress,
-    onEnded,
-    onAutoplayBlocked,
-    onError,
-  } = props;
+  const { videoId, playing, volume, muted, onReady, onPlay, onPause, onProgress, onEnded, onAutoplayBlocked, onError } =
+    props;
 
   const playerId = useId();
   const playerRef = useRef<any>(null);
@@ -75,8 +54,9 @@ export default function Player(props: PlayerProps) {
     let loaded = false;
     let iframeAPIReady = false;
     function onYTReady() {
+      debug("onYTReady: constructing player");
       playerRef.current = new (window as any).YT.Player(playerId, {
-        width,
+        width: "100%",
         playerVars: {
           playsinline: 1,
           enablejsapi: 1,
@@ -86,6 +66,15 @@ export default function Player(props: PlayerProps) {
         },
         events: {
           onReady(e: { target: PlayerController }) {
+            // Sometimes this player just straight up never loads, for reasons I
+            // also do not understand. This timeout and hard refresh helps
+            // mitigate. For some reason, this seems to happen more when I have
+            // more simultaneous tabs open (for testing). Maybe it's a network
+            // thing?
+            const failureTimeout = setTimeout(() => {
+              window.location.reload();
+            }, 5000);
+
             // I know this looks insane but I promise it's needed, because some
             // of the methods on the player (like `loadVideoById`) don't exist
             // after construction. Apparently, they're added asynchronously.
@@ -98,23 +87,32 @@ export default function Player(props: PlayerProps) {
             // object's keys change. It is truly baffling. I spent so fucking
             // long debugging this.
             const interval = setInterval(() => {
-              if (Object.keys(playerRef.current).includes("loadVideoById")) {
+              const keys = Object.keys(playerRef.current);
+              debug("onReady: keys", { keys });
+              if (keys.includes("loadVideoById")) {
+                clearTimeout(failureTimeout);
                 clearInterval(interval);
 
-                if (propsRef.current?.["videoId"]) {
-                  if (propsRef.current?.["playing"]) {
-                    console.log("load vid");
+                const videoId = propsRef.current?.["videoId"];
+                debug("onReady: videoId", { videoId });
+                if (videoId) {
+                  const playing = propsRef.current?.["playing"];
+                  debug("onReady: playing", { playing });
+                  if (playing) {
+                    debug("onReady: loadVideoById");
                     playerRef.current.loadVideoById(videoId);
                   } else {
-                    console.log("cue vid");
+                    debug("onReady: cueVideoById");
                     playerRef.current.cueVideoById(videoId);
                   }
                   setLastVideoId(videoId);
                 }
-                propsRef.current?.["onReady"]?.(e);
+                const onReady = propsRef.current?.["onReady"];
+                debug("onReady: onReady", { onReady });
+                onReady?.(e);
                 setPlayerReady(true);
               }
-            }, 1000);
+            }, 500);
           },
           onStateChange(e: { data: number }) {
             if (e.data === 0) {
@@ -128,30 +126,51 @@ export default function Player(props: PlayerProps) {
           onAutoplayBlocked() {
             propsRef.current?.["onAutoplayBlocked"]?.();
           },
-          onError(e: { data: number }) {
-            propsRef.current?.["onError"]?.(e);
+          onError(e: { data: number; target: PlayerController }) {
+            let message = "UNKNOWN_ERROR";
+            switch (e.data) {
+              case 2:
+                message = "INVALID_PARAMETER_VALUE";
+                break;
+              case 5:
+                message = "HTML5_PLAYER_ERROR";
+                break;
+              case 100:
+                message = "VIDEO_NOT_FOUND";
+                break;
+              case 101:
+                message = "VIDEO_DOES_NOT_ALLOW_EMBEDDED_PLAYERS";
+                break;
+              case 150:
+                message = "VIDEO_DOES_NOT_ALLOW_EMBEDDED_PLAYERS";
+                break;
+            }
+            const err = { code: e.data, message };
+            propsRef.current?.["onError"]?.(err);
           },
         },
       });
       if (debugging()) {
+        debug("onYTReady: setting window.player");
         (window as any).player = playerRef.current;
       }
     }
     window.addEventListener("load", () => {
-      debug("load");
+      debug("window.addEventListener: load");
       loaded = true;
       if (iframeAPIReady) {
         onYTReady();
       }
     });
+    // TODO: Add proper typings for these globals and externals.
     (window as any).onYouTubeIframeAPIReady = () => {
-      debug("onYouTubeIframeAPIReady");
+      debug("window.onYouTubeIframeAPIReady");
       iframeAPIReady = true;
       if (loaded) {
         onYTReady();
       }
     };
-    if ((window as any).YT.loaded === 1) {
+    if ((window as any).YT?.loaded === 1) {
       (window as any).onYouTubeIframeAPIReady();
     }
   }, []);
@@ -183,6 +202,7 @@ export default function Player(props: PlayerProps) {
     }
   }, [playerReady, playing]);
   useEffect(() => {
+    debug("useEffect: [playerReady, volume]", { playerReady, volume });
     if (playerReady && playerRef.current) {
       playerRef.current.setVolume(volume);
     }

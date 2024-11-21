@@ -8,7 +8,7 @@ A room has an audience of zero or more users. When a user enters a room, they ar
 
 Users can add videos to the queue. Whoever adds a video is its "submitter". Videos from the queue play one at a time, with playback synchronized between all users in the room. The submitter of the video controls the playback of the video (i.e. playing, pausing, and seeking).
 
-When a video is playing, users that are not the submitter can "upvote" or "downvote" the video. The video's "net score" is its upvotes minus its downvotes. A video whose net score is less than `ceil(-1 * 0.5 * [the number of users in the room])` is immediately skipped as soon as the score threshold is reached.
+When a video is playing, users that are not the submitter can vote to skip. If more than half of listeners vote to skip, the video is skipped.
 
 ## Backend architecture
 

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
 import useWebSocket, { ReadyState } from "react-use-websocket";
-// import YouTubePlayer from "youtube-player";
 import formatDuration from "format-duration";
+
 import Player, { PlayerController } from "./Player";
+import { debug } from "./debug";
 
 // TODO: Can we generate these type definitions from the Aeson instances?
 type ClientID = string;
@@ -51,19 +52,14 @@ type QueuedVideo = {
   submitter: ClientID;
 };
 
-type ServerMessage = UpdateClientList | UpdateQueue | SetPlayer | UnsetPlayer;
+type UpdateVotes = {
+  tag: "UpdateVotes";
+  skips: number;
+};
+
+type ServerMessage = UpdateClientList | UpdateQueue | UpdateVotes | SetPlayer | UnsetPlayer;
 
 const SECONDS_DRIFT_ALLOWED = 2;
-
-// TODO: Turn this off in production.
-// @ts-expect-error
-const ALWAYS_DEBUG = process.env.NODE_ENV === "development";
-const debugging = () => ALWAYS_DEBUG || (window as any)["jukeboxRuntimeDebug"] === true;
-function debug(...args: any[]) {
-  if (debugging()) {
-    console.log(...args);
-  }
-}
 
 export default function Room() {
   // Connect to WebSocket.
@@ -85,10 +81,16 @@ export default function Room() {
           setQueuedVideos(msg.videos);
           break;
         }
+        case "UpdateVotes": {
+          setSkipVotes(msg.skips);
+          break;
+        }
         case "SetPlayer": {
           setHasActiveVideo(true);
           setPlayerURL(msg.videoURL);
           setPlayerHostID(msg.submitter);
+          setVotedToSkip(false);
+          setSkipVotes(0);
           switch (msg.playbackStatus.tag) {
             case "Playing": {
               // Calculate correct seek, compensating for start time.
@@ -100,6 +102,23 @@ export default function Room() {
               // Allow clients to drift a tiny little bit. Otherwise they will
               // jump a bit to try and snap to the "correct" seek.
               if (Math.abs(seekTarget - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
+                // TODO: FIXME: I think instead of seeking here, we should save
+                // the playback state and seek during `onPlay`. This handles the
+                // case when a client joins mid-playback so they receive the
+                // `SetPlayer` message before their video player is fully
+                // initialized. Right now this causes them to just play from
+                // zero instead of seeking correctly.
+                //
+                // Maybe we have to do both, to handle both scenarios? But it
+                // feels like there is one general solution here.
+                //
+                // There are two cases here: either the control message arrives
+                // before the player is ready, or after the player is ready. To
+                // handle the case where the control message arrives before, we
+                // should save the latest control message and apply it during
+                // `onReady`. To handle the case where the control message
+                // arrives after, we should apply the control message on
+                // arrival too.
                 playerRef.current?.seekTo(seekTarget, true);
                 setActiveVideoPlayedSeconds(seekTarget);
               }
@@ -133,6 +152,8 @@ export default function Room() {
           setHasActiveVideo(false);
           setPlayerURL("");
           setPlayerHostID("");
+          setVotedToSkip(false);
+          setSkipVotes(0);
           setActiveVideoPlayedSeconds(0);
           setActiveVideoDuration(undefined);
           console.log("UnsetPlayer: setPlayingDesired(true)");
@@ -157,7 +178,7 @@ export default function Room() {
 
   // Hooks related to playback.
   const [showAutoplayBlockedDialog, setShowAutoplayBlockedDialog] = useState(false);
-  const [playerVolume, setPlayerVolume] = useState<number | undefined>(undefined);
+  const [playerVolume, setPlayerVolume] = useState(100);
   const [playerMuted, setPlayerMuted] = useState(false);
   // The desired `playing` status. We maintain this to quickly override user
   // inputs in the player using `setTimeout(..., 1)` when needed.
@@ -188,7 +209,9 @@ export default function Room() {
   const [addToQueueInput, setAddToQueueInput] = useState("");
   const [queuedVideos, setQueuedVideos] = useState<QueuedVideo[]>([]);
 
-  // console.log("Tick", { playingDesired, playingActual });
+  // Hooks related to skip voting.
+  const [votedToSkip, setVotedToSkip] = useState(false);
+  const [skipVotes, setSkipVotes] = useState(0);
 
   // Render disconnected state. Note that all returns must occur after all hooks
   // are called, so that all hooks are called in the same order every render.
@@ -225,7 +248,7 @@ export default function Room() {
           </a>
         </p>
         <p className="mt-2">
-          Here's the error: <code>{JSON.stringify(playerError)}</code>
+          Here's the error: <code>{JSON.stringify(playerError, null, 2)}</code>
         </p>
       </div>
     );
@@ -237,14 +260,9 @@ export default function Room() {
 
   return (
     <div className="mx-auto max-w-2xl mt-8">
-      {/* TODO: Replace this with some other YouTube player that autoblocks
-          less, try to replicate the functionality (maybe by looking in the
-          react-player library source), and see if that solves the autoblocking
-          issues. */}
       <Player
         videoId={playerURL}
         playing={playingActual}
-        width="100%"
         volume={playerVolume}
         muted={playerMuted}
         onReady={(e) => {
@@ -326,6 +344,25 @@ export default function Room() {
           }, 1);
         }}
         onError={(err) => {
+          // TODO: Some of these errors (like error code 2, "bad video ID")
+          // should be recoverable. In particular, the video player doesn't
+          // break - you can load another video ID it will happily continue. But
+          // we don't currently have a way to do this - there's no way for the
+          // host to skip their bad video without refreshing (and thus losing
+          // all of their queued videos), and it will never continue naturally
+          // because no clients will send `PlaybackFinished`.
+          //
+          // Maybe we should have clients send `PlaybackFinished` during
+          // `onError`? Maybe we should validate video IDs in the backend? Maybe
+          // we should add a UI control to allow a host to forcibly skip their
+          // video? Unsure.
+          //
+          // Right now I'm leaning towards showing a non-fatal error message
+          // (like the "autoplay blocked") error instead of the current fatal
+          // error message, and then sending `PlaybackFinished` to autorecover.
+          // After all, these errors are recoverable in the sense that they
+          // shouldn't kill the client, but there is also no way for the client
+          // to make the bad videos playable.
           console.error(err);
           setPlayerError(err);
         }}
@@ -459,13 +496,13 @@ export default function Room() {
               className="ml-2 inline-block align-middle"
               type="range"
               min="0"
-              max="1"
-              step="any"
-              value={playerVolume || 1}
+              max="100"
+              step="1"
+              value={playerVolume}
               onChange={(e) => setPlayerVolume(Number(e.target.value))}
               disabled={!playerReady}
             />
-            <span className="ml-2 text-sm">{playerVolume ? Math.round(playerVolume * 100) + "%" : ""}</span>
+            <span className="ml-2 text-sm">{playerVolume + "%"}</span>
           </div>
           {showAutoplayBlockedDialog && (
             <div className="text-sm text-red-700 border-l-4 border-red-400 bg-red-50 p-4 mt-2">
@@ -491,14 +528,14 @@ export default function Room() {
             }}
           >
             <div className="relative flex grow items-stretch focus-within:z-10">
-              <label htmlFor="video-url" className="sr-only">
-                Video URL
+              <label htmlFor="video-id" className="sr-only">
+                Video ID
               </label>
               <input
-                id="video-url"
-                name="video-url"
+                id="video-id"
+                name="video-id"
                 type="text"
-                placeholder="Video URL"
+                placeholder="Video ID"
                 value={addToQueueInput}
                 onChange={(e) => setAddToQueueInput(e.target.value)}
                 className="block w-full rounded-none rounded-l-md border-0 py-1.5 px-3 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm/6"
@@ -533,9 +570,32 @@ export default function Room() {
           </ul>
         </div>
         <div>
-          {/* TODO: Implement voting */}
-          Upvote/Downvote (unimplemented)
-          <p className="mt-4">Current listeners:</p>
+          {hasActiveVideo && (playerHostID !== myClientID || skipVotes > 0) && (
+            <div className="mb-4">
+              {playerHostID !== myClientID && (
+                <button
+                  type="submit"
+                  className="mr-2 relative inline-flex items-center gap-x-1.5 rounded-md px-3 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+                  onClick={() => {
+                    const nextVote = !votedToSkip;
+                    setVotedToSkip(nextVote);
+                    sendJsonMessage({
+                      tag: "Vote",
+                      skip: nextVote,
+                    });
+                  }}
+                >
+                  {votedToSkip ? "Unvote to Skip" : "Vote to Skip"}
+                </button>
+              )}
+              {skipVotes > 0 && (
+                <span>
+                  Votes: {skipVotes}/{clients.length - 1} ({Math.ceil((clients.length - 1) / 2) + 1} needed)
+                </span>
+              )}
+            </div>
+          )}
+          <p>Current listeners:</p>
           <ul className="list-disc list-inside ml-4">
             {clients.map((client) => (
               <li key={client.clientID}>
