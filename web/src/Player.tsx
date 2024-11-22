@@ -54,6 +54,13 @@ export default function Player(props: PlayerProps) {
     let loaded = false;
     let iframeAPIReady = false;
     function onYTReady() {
+      // This is needed because React's StrictMode runs useEffect twice, but
+      // there's no way to destroy the side effect of player construction
+      // because the player initializes asynchronously and the `destroy` method
+      // is not available by the time the destructor is called.
+      if (playerRef.current) {
+        return;
+      }
       debug("onYTReady: constructing player");
       playerRef.current = new (window as any).YT.Player(playerId, {
         width: "100%",
@@ -62,7 +69,7 @@ export default function Player(props: PlayerProps) {
           enablejsapi: 1,
           disablekb: 1,
           controls: 0,
-          autoplay: 0,
+          autoplay: 1,
         },
         events: {
           onReady(e: { target: PlayerController }) {
@@ -173,6 +180,7 @@ export default function Player(props: PlayerProps) {
       }
     };
     if ((window as any).YT?.loaded === 1) {
+      debug("window.YT.loaded === 1");
       (window as any).onYouTubeIframeAPIReady();
     }
   }, []);

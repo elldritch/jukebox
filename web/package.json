@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "build": "npm run build:css && npm run build:js",
-    "build:js": "esbuild ./src/root.tsx --bundle --outfile=../static/room.js",
+    "build:js": "esbuild ./src/root.tsx --bundle --outfile=../static/room.js --sourcemap --minify",
     "build:css": "tailwindcss --input ./tailwind.css --output ../static/styles.css",
     "dev": "concurrently --kill-others \"npm run dev:js\" \"npm run dev:css\"",
-    "dev:js": "esbuild ./src/root.tsx --bundle --outfile=../static/room.js --watch --sourcemap --target=chrome131",
+    "dev:js": "esbuild ./src/root.tsx --bundle --outfile=../static/room.js --watch --sourcemap",
     "dev:css": "tailwindcss --input ./tailwind.css --output ../static/styles.css --watch"
   },
   "devDependencies": {
