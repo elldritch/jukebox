@@ -72,7 +72,9 @@ export default function Player(props: PlayerProps) {
             // more simultaneous tabs open (for testing). Maybe it's a network
             // thing?
             const failureTimeout = setTimeout(() => {
-              window.location.reload();
+              if (!debugging()) {
+                window.location.reload();
+              }
             }, 5000);
 
             // I know this looks insane but I promise it's needed, because some
