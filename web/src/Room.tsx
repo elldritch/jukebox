@@ -516,9 +516,17 @@ export default function Room() {
             className="flex rounded-md shadow-sm"
             onSubmit={(e) => {
               e.preventDefault();
+              let slug = addToQueueInput.trim();
+              try {
+                const url = new URL(addToQueueInput);
+                let param = url.searchParams.get('v');
+                if (param) {
+                  slug = param;
+                }
+              } catch (error) {}
               sendJsonMessage({
                 tag: "AddToQueue",
-                videoID: addToQueueInput,
+                videoID: slug,
               });
               setAddToQueueInput("");
             }}
