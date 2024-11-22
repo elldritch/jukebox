@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import formatDuration from "format-duration";
+import { XMarkIcon } from "@heroicons/react/20/solid";
 
 import Player, { PlayerController } from "./Player";
 
@@ -68,10 +69,10 @@ export default function Room() {
   // const playerRef = useRef<ReturnType<typeof YouTubePlayer> | null>(null);
   const playerRef = useRef<PlayerController | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
-  const [playerError, setPlayerError] = useState<{} | undefined>(undefined);
+  const [errorMessage, setErrorMessage] = useState<React.JSX.Element | null>(null);
+  const [fatalError, setFatalError] = useState<{} | undefined>(undefined);
 
   // Hooks related to playback.
-  const [showAutoplayBlockedDialog, setShowAutoplayBlockedDialog] = useState(false);
   const [playerVolume, setPlayerVolume] = useState(100);
   const [playerMuted, setPlayerMuted] = useState(false);
   // The desired `playing` status. We maintain this to quickly override user
@@ -243,8 +244,8 @@ export default function Room() {
   }
 
   // Render error state.
-  if (playerError) {
-    console.error(playerError);
+  if (fatalError) {
+    console.error(fatalError);
     return (
       <div className="mx-auto max-w-lg mt-8 text-red-700 border-l-4 border-red-400 bg-red-50 p-4">
         <p>
@@ -254,7 +255,7 @@ export default function Room() {
           </a>
         </p>
         <p className="mt-2">
-          Here's the error: <code>{JSON.stringify(playerError, null, 2)}</code>
+          Here's the error: <code>{JSON.stringify(fatalError, null, 2)}</code>
         </p>
       </div>
     );
@@ -338,36 +339,27 @@ export default function Room() {
           // If this site does not have autoplay permissions for this user,
           // begin autoplay on mute.
           console.log("onAutoplayBlocked");
-          setShowAutoplayBlockedDialog(true);
+          setErrorMessage(
+            <>
+              <a href="https://developer.chrome.com/blog/autoplay/" target="_blank" className="font-medium underline">
+                Chrome blocks autoplaying with sound
+              </a>
+              , so you may need to unmute or click the video to start playing.
+            </>
+          );
           setPlayingActual(false);
           setPlayerMuted(true);
-          setTimeout(() => {
-            setPlayingActual(true);
-          }, 1);
+          setTimeout(() => setPlayingActual(true), 1);
         }}
         onError={(err) => {
-          // TODO: Some of these errors (like error code 2, "bad video ID")
-          // should be recoverable. In particular, the video player doesn't
-          // break - you can load another video ID and it will happily continue.
-          // But we don't currently have a way to do this - there's no way for
-          // the host to skip their bad video without refreshing (and thus
-          // losing all of their queued videos), and it will never continue
-          // naturally because no clients will send `PlaybackFinished` since
-          // `onEnded` will never fire.
-          //
-          // Maybe we should have clients send `PlaybackFinished` during
-          // `onError`? Maybe we should validate video IDs in the backend? Maybe
-          // we should add a UI control to allow a host to forcibly skip their
-          // video? Unsure.
-          //
-          // Right now I'm leaning towards showing a non-fatal error message
-          // (like the "autoplay blocked") error instead of the current fatal
-          // error message, and then sending `PlaybackFinished` to autorecover.
-          // After all, these errors are recoverable in the sense that they
-          // shouldn't kill the client, but there is also no way for the client
-          // to make the bad videos playable.
           console.error(err);
-          // setPlayerError(err);
+          setErrorMessage(
+            <>
+              <p>The player encountered an error, so we skipped that video. Here's the error:</p>
+              <code className="inline-block mt-2">{JSON.stringify(err, null, 2)}</code>
+            </>
+          );
+          sendJsonMessage({ tag: "PlaybackFinished" });
         }}
 
         // TODO: Add callbacks for onBuffer and onBufferEnd and use them for
@@ -435,12 +427,8 @@ export default function Room() {
                   max={activeVideoDuration || 1}
                   step="any"
                   disabled={!(hasActiveVideo && playerReady && activeVideoDuration)}
-                  onMouseDown={() => {
-                    setIsSeeking(true);
-                  }}
-                  onChange={(e) => {
-                    setIsSeekingValue(Number(e.target.value));
-                  }}
+                  onMouseDown={() => setIsSeeking(true)}
+                  onChange={(e) => setIsSeekingValue(Number(e.target.value))}
                   onMouseUp={() => {
                     playerRef.current?.seekTo(isSeekingValue, true);
                     setActiveVideoPlayedSeconds(isSeekingValue);
@@ -485,12 +473,7 @@ export default function Room() {
               <button
                 type="button"
                 className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-900 shadow-sm hover:bg-gray-200"
-                onClick={() => {
-                  if (playerMuted && showAutoplayBlockedDialog) {
-                    setShowAutoplayBlockedDialog(false);
-                  }
-                  setPlayerMuted(!playerMuted);
-                }}
+                onClick={() => setPlayerMuted(!playerMuted)}
               >
                 {playerMuted ? "Unmute" : "Mute"}
               </button>
@@ -508,12 +491,21 @@ export default function Room() {
             />
             <span className="ml-2 text-sm">{playerVolume + "%"}</span>
           </div>
-          {showAutoplayBlockedDialog && (
-            <div className="text-sm text-red-700 border-l-4 border-red-400 bg-red-50 p-4 mt-2">
-              <a href="https://developer.chrome.com/blog/autoplay/" target="_blank" className="font-medium underline">
-                Chrome blocks autoplaying with sound
-              </a>
-              , so you may need to unmute or click the video to start playing.
+          {errorMessage && (
+            <div className="text-sm text-red-700 border-l-4 border-red-400 bg-red-50 p-4 mt-2 flex">
+              <div>{errorMessage}</div>
+              <div className="ml-auto pl-3">
+                <div className="-mx-1.5 -my-1.5">
+                  <button
+                    type="button"
+                    className="inline-flex rounded-md bg-red-50 p-1.5 text-red-500 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 focus:ring-offset-red-50"
+                    onClick={() => setErrorMessage(null)}
+                  >
+                    <span className="sr-only">Dismiss</span>
+                    <XMarkIcon aria-hidden="true" className="size-5" />
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </>
