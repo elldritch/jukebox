@@ -7,9 +7,9 @@ module Jukebox.HTML (
 
 import Relude
 
-import Text.Blaze.Html5 (Attribute, AttributeValue, Html, body, docTypeHtml, link, meta, (!))
+import Text.Blaze.Html5 (Attribute, AttributeValue, Html, a, body, docTypeHtml, link, meta, p, (!))
 import Text.Blaze.Html5 qualified as H
-import Text.Blaze.Html5.Attributes (charset, class_, content, href, lang, name, rel)
+import Text.Blaze.Html5.Attributes (charset, class_, content, href, lang, name, rel, target)
 
 frontMatter :: Html -> Html
 frontMatter children = docTypeHtml ! lang "en" $ do
@@ -19,10 +19,18 @@ frontMatter children = docTypeHtml ! lang "en" $ do
     H.title "Jukebox"
     meta ! name "description" ! content "Listen to music with your friends"
     link ! rel "stylesheet" ! href "/static/styles.css"
-  body children
+  body ! class_ "min-h-screen flex flex-col" $ do
+    H.div ! class_ "grow" $ children
+    p ! class_ " pt-4 pb-8 text-center text-sm text-gray-400" $ do
+      "Open source on "
+      a
+        ! href "https://github.com/elldritch/jukebox"
+        ! class_ "text-blue-400"
+        ! target "_blank"
+        $ "GitHub"
 
 classNames :: [AttributeValue] -> Attribute
-classNames = class_ . foldl' (\a b -> a <> " " <> b) ""
+classNames = class_ . foldl' (\x y -> x <> " " <> y) ""
 
 baseButtonStyles :: [AttributeValue]
 baseButtonStyles =

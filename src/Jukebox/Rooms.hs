@@ -233,6 +233,8 @@ startRoom tvar = do
       (leaving, ClientLeft) -> do
         now <- getCurrentTime
         atomically $ do
+          -- TODO: FIXME: When a client leaves, all of their videos in the queue
+          -- should also be removed.
           (Rooms rooms, room@Room{activeVideo, queuedVideos}) <- readRoom' roomID tvar
           room' <- case activeVideo of
             Nothing -> pure room
