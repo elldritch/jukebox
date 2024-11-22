@@ -305,7 +305,7 @@ export default function Room() {
           //
           // This handles the case where a control message is sent before the
           // player is initialized.
-          if (lastPlayerMessage && lastPlayerMessage.tag === "SetPlayer") {
+          if (lastPlayerMessage && lastPlayerMessage.tag === "SetPlayer" && myClientID !== playerHostID) {
             syncSeek(lastPlayerMessage);
           }
           setPlayingActual(true);
