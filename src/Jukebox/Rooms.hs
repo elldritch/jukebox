@@ -222,30 +222,29 @@ startRoom tvar = do
         pure room
 
       -- Broadcast the new client list to all clients. Clear all videos in the
-      -- queue of the departing client. If there is an active video and the
-      -- departing client is the submitter of the active video, go to the next
-      -- remaining video. If there is an active video and the departing client
-      -- is not the submitter, remove the departing client from the client
-      -- finished status map.
+      -- queue submitted by the departing client. If there is an active video
+      -- and the departing client is the submitter of the active video, go to
+      -- the next remaining video. If there is an active video and the departing
+      -- client is not the submitter, remove the departing client from the
+      -- client finished status map.
       --
       -- The client handler is responsible for having already removed the client
       -- that left.
       (leaving, ClientLeft) -> do
         now <- getCurrentTime
         atomically $ do
-          -- TODO: FIXME: When a client leaves, all of their videos in the queue
-          -- should also be removed.
           (Rooms rooms, room@Room{activeVideo, queuedVideos}) <- readRoom' roomID tvar
-          room' <- case activeVideo of
+          let room' = room{queuedVideos = filter ((/= leaving) . (.submitter)) queuedVideos}
+          room'' <- case activeVideo of
             Nothing -> pure room
             Just video -> do
               if video.submitter == leaving
                 then
                   -- If the submitter left, move to the next video in the queue.
-                  case filter ((/= leaving) . (.submitter)) queuedVideos of
+                  case queuedVideos of
                     -- If there are videos left, move to the next video and send UpdateQueue and SetPlayer.
                     QueuedVideo{videoURL, submitter} : queuedVideos' -> do
-                      let room' =
+                      let room'' =
                             room
                               { activeVideo =
                                   Just
@@ -258,9 +257,9 @@ startRoom tvar = do
                                       }
                               , queuedVideos = queuedVideos'
                               }
-                      broadcast room' UpdateQueue{videos = queuedVideos'}
-                      broadcast room' SetPlayer{videoURL, playbackStatus = Playing{fromSeekSeconds = 0, started = now}, submitter}
-                      pure room'
+                      broadcast room'' UpdateQueue{videos = queuedVideos'}
+                      broadcast room'' SetPlayer{videoURL, playbackStatus = Playing{fromSeekSeconds = 0, started = now}, submitter}
+                      pure room''
                     -- If there are no videos left, clear the active video and send UnsetPlayer.
                     [] -> do
                       broadcast room UnsetPlayer
@@ -273,7 +272,7 @@ startRoom tvar = do
                           , skipVotes = delete leaving video.skipVotes
                           }
                   pure room{activeVideo = Just video'}
-          broadcastClientList room'
+          broadcastClientList room''
           writeTVar tvar $ Rooms $ insert roomID room' rooms
           pure room'
 
