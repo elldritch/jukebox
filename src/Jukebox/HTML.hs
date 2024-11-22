@@ -7,9 +7,13 @@ module Jukebox.HTML (
 
 import Relude
 
-import Text.Blaze.Html5 (Attribute, AttributeValue, Html, a, body, docTypeHtml, link, meta, p, (!))
+import GitHash (GitInfo, giHash, tGitInfoCwd)
+import Text.Blaze.Html5 (Attribute, AttributeValue, Html, a, body, docTypeHtml, link, meta, p, toHtml, (!))
 import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes (charset, class_, content, href, lang, name, rel, target)
+
+version :: GitInfo
+version = $$tGitInfoCwd
 
 frontMatter :: Html -> Html
 frontMatter children = docTypeHtml ! lang "en" $ do
@@ -21,13 +25,15 @@ frontMatter children = docTypeHtml ! lang "en" $ do
     link ! rel "stylesheet" ! href "/static/styles.css"
   body ! class_ "min-h-screen flex flex-col" $ do
     H.div ! class_ "grow" $ children
-    p ! class_ " pt-4 pb-8 text-center text-sm text-gray-400" $ do
-      "Open source on "
-      a
-        ! href "https://github.com/elldritch/jukebox"
-        ! class_ "text-blue-400"
-        ! target "_blank"
-        $ "GitHub"
+    H.div ! class_ " pt-4 pb-8 text-center text-sm text-gray-400" $ do
+      p $ do
+        "Open source on "
+        a
+          ! href "https://github.com/elldritch/jukebox"
+          ! class_ "text-blue-400"
+          ! target "_blank"
+          $ "GitHub"
+      p $ "Jukebox v." <> toHtml (take 7 $ giHash version)
 
 classNames :: [AttributeValue] -> Attribute
 classNames = class_ . foldl' (\x y -> x <> " " <> y) ""
