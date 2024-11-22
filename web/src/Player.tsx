@@ -1,10 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 
-import { debug, debugging } from "./debug";
-
 export type PlayerController = {
   seekTo(seconds: number, allowSeekAhead: true): void;
-  getDuration(): number;
+  getDuration(): number | undefined;
 };
 
 export type PlayerProps = {
@@ -61,7 +59,7 @@ export default function Player(props: PlayerProps) {
       if (playerRef.current) {
         return;
       }
-      debug("onYTReady: constructing player");
+      console.log("onYTReady: constructing player");
       playerRef.current = new (window as any).YT.Player(playerId, {
         width: "100%",
         playerVars: {
@@ -73,55 +71,18 @@ export default function Player(props: PlayerProps) {
         },
         events: {
           onReady(e: { target: PlayerController }) {
-            // Sometimes this player just straight up never loads, for reasons I
-            // also do not understand. This timeout and hard refresh helps
-            // mitigate. For some reason, this seems to happen more when I have
-            // more simultaneous tabs open (for testing). Maybe it's a network
-            // thing?
-            const failureTimeout = setTimeout(() => {
-              if (!debugging()) {
-                window.location.reload();
+            const videoId = propsRef.current?.["videoId"];
+            if (videoId) {
+              console.log("onReady: videoId", { videoId });
+              if (propsRef.current?.["playing"]) {
+                playerRef.current.loadVideoById(videoId);
+              } else {
+                playerRef.current.cueVideoById(videoId);
               }
-            }, 5000);
-
-            // I know this looks insane but I promise it's needed, because some
-            // of the methods on the player (like `loadVideoById`) don't exist
-            // after construction. Apparently, they're added asynchronously.
-            //
-            // You can observe this behavior with:
-            //
-            // > setInterval(() => console.log(Object.keys(playerRef.current)), 100);
-            //
-            // on the player immediately after construction, and watch as the
-            // object's keys change. It is truly baffling. I spent so fucking
-            // long debugging this.
-            const interval = setInterval(() => {
-              const keys = Object.keys(playerRef.current);
-              debug("onReady: keys", { keys });
-              if (keys.includes("loadVideoById")) {
-                clearTimeout(failureTimeout);
-                clearInterval(interval);
-
-                const videoId = propsRef.current?.["videoId"];
-                debug("onReady: videoId", { videoId });
-                if (videoId) {
-                  const playing = propsRef.current?.["playing"];
-                  debug("onReady: playing", { playing });
-                  if (playing) {
-                    debug("onReady: loadVideoById");
-                    playerRef.current.loadVideoById(videoId);
-                  } else {
-                    debug("onReady: cueVideoById");
-                    playerRef.current.cueVideoById(videoId);
-                  }
-                  setLastVideoId(videoId);
-                }
-                const onReady = propsRef.current?.["onReady"];
-                debug("onReady: onReady", { onReady });
-                onReady?.(e);
-                setPlayerReady(true);
-              }
-            }, 500);
+              setLastVideoId(videoId);
+            }
+            propsRef.current?.["onReady"]?.(e);
+            setPlayerReady(true);
           },
           onStateChange(e: { data: number }) {
             if (e.data === 0) {
@@ -155,17 +116,16 @@ export default function Player(props: PlayerProps) {
                 break;
             }
             const err = { code: e.data, message };
+            console.error(err);
+            console.error(propsRef.current);
             propsRef.current?.["onError"]?.(err);
           },
         },
       });
-      if (debugging()) {
-        debug("onYTReady: setting window.player");
-        (window as any).player = playerRef.current;
-      }
+      (window as any).player = playerRef.current;
     }
     window.addEventListener("load", () => {
-      debug("window.addEventListener: load");
+      console.log("window.addEventListener: load");
       loaded = true;
       if (iframeAPIReady) {
         onYTReady();
@@ -173,46 +133,46 @@ export default function Player(props: PlayerProps) {
     });
     // TODO: Add proper typings for these globals and externals.
     (window as any).onYouTubeIframeAPIReady = () => {
-      debug("window.onYouTubeIframeAPIReady");
+      console.log("window.onYouTubeIframeAPIReady");
       iframeAPIReady = true;
       if (loaded) {
         onYTReady();
       }
     };
     if ((window as any).YT?.loaded === 1) {
-      debug("window.YT.loaded === 1");
+      console.log("window.YT.loaded === 1");
       (window as any).onYouTubeIframeAPIReady();
     }
   }, []);
 
   // Synchronize player state with various props.
   useEffect(() => {
-    debug("useEffect: [playerReady, videoId, lastVideoId]", { playerReady, videoId, lastVideoId });
+    console.log("useEffect: [playerReady, videoId, lastVideoId]", { playerReady, videoId, lastVideoId });
     if (playerReady && playerRef.current && videoId !== lastVideoId) {
       if (playing) {
-        debug("Called loadVideoById");
+        console.log("Called loadVideoById");
         playerRef.current.loadVideoById(videoId);
       } else {
-        debug("Called cueVideoById");
+        console.log("Called cueVideoById");
         playerRef.current.cueVideoById(videoId);
       }
       setLastVideoId(videoId);
     }
   }, [playerReady, videoId, lastVideoId]);
   useEffect(() => {
-    debug("useEffect: [playerReady, playing]", { playerReady, playing });
+    console.log("useEffect: [playerReady, playing]", { playerReady, playing });
     if (playerReady && playerRef.current) {
       if (playing) {
-        debug("Called playVideo");
+        console.log("Called playVideo");
         playerRef.current.playVideo();
       } else {
-        debug("Called pauseVideo");
+        console.log("Called pauseVideo");
         playerRef.current.pauseVideo();
       }
     }
   }, [playerReady, playing]);
   useEffect(() => {
-    debug("useEffect: [playerReady, volume]", { playerReady, volume });
+    console.log("useEffect: [playerReady, volume]", { playerReady, volume });
     if (playerReady && playerRef.current) {
       playerRef.current.setVolume(volume);
     }

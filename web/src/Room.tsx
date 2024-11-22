@@ -4,7 +4,6 @@ import useWebSocket, { ReadyState } from "react-use-websocket";
 import formatDuration from "format-duration";
 
 import Player, { PlayerController } from "./Player";
-import { debug } from "./debug";
 
 // TODO: Can we generate these type definitions from the Aeson instances?
 type ClientID = string;
@@ -65,11 +64,96 @@ export default function Room() {
   // Connect to WebSocket.
   const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket<ServerMessage>(document.location.pathname);
 
+  // Hooks related to player health.
+  // const playerRef = useRef<ReturnType<typeof YouTubePlayer> | null>(null);
+  const playerRef = useRef<PlayerController | null>(null);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [playerError, setPlayerError] = useState<{} | undefined>(undefined);
+
+  // Hooks related to playback.
+  const [showAutoplayBlockedDialog, setShowAutoplayBlockedDialog] = useState(false);
+  const [playerVolume, setPlayerVolume] = useState(100);
+  const [playerMuted, setPlayerMuted] = useState(false);
+  // The desired `playing` status. We maintain this to quickly override user
+  // inputs in the player using `setTimeout(..., 1)` when needed.
+  const [playingDesired, setPlayingDesired] = useState(false);
+  // The actual `playing` status reflecting the player's state. Note that this
+  // can go out of sync with the player if the player callbacks are not
+  // respected.
+  //
+  // We have this in addition to `playingDesired` because we want to track the
+  // actual playing status so that we know when it needs to be changed. If we
+  // only ever tracked the desired playing status, we would not have a prop to
+  // change when the user changed the actual status but not the desired status
+  // (e.g. if they click on the player). We need a changeable prop because the
+  // `Player` only updates when one of its props _changes_.
+  const [playingActual, setPlayingActual] = useState(false);
+
+  // Hooks related to the active video.
+  const [hasActiveVideo, setHasActiveVideo] = useState(false);
+  const [playerURL, setPlayerURL] = useState("");
+  const [playerHostID, setPlayerHostID] = useState("");
+  const [activeVideoDuration, setActiveVideoDuration] = useState<number | undefined>(undefined);
+  const [activeVideoPlayedSeconds, setActiveVideoPlayedSeconds] = useState(0);
+
+  // Hooks used to track remote seek synchronization.
+  const [lastPlayerMessage, setLastPlayerMessage] = useState<SetPlayer | UnsetPlayer | undefined>(undefined);
+
+  // Hooks related to the local seeking control.
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [isSeekingValue, setIsSeekingValue] = useState(0);
+
+  // Hooks related to the client list.
+  const [clients, setClients] = useState<Client[]>([]);
+  const [myClientID, setMyClientID] = useState("");
+  const [newHandleInput, setNewHandleInput] = useState("");
+
+  // Hooks related to the queue.
+  const [addToQueueInput, setAddToQueueInput] = useState("");
+  const [queuedVideos, setQueuedVideos] = useState<QueuedVideo[]>([]);
+
+  // Hooks related to skip voting.
+  const [votedToSkip, setVotedToSkip] = useState(false);
+  const [skipVotes, setSkipVotes] = useState(0);
+
+  function syncSeek(msg: SetPlayer) {
+    console.log("syncSeek", msg);
+    let seekToSeconds = 0;
+    switch (msg.playbackStatus.tag) {
+      case "Playing": {
+        // Calculate correct seek, compensating for start time.
+        const started = new Date(msg.playbackStatus.started);
+        const now = new Date();
+        const elapsedSeconds = Math.max(0, (now.getTime() - started.getTime()) / 1000);
+        seekToSeconds = elapsedSeconds + msg.playbackStatus.fromSeekSeconds;
+        break;
+      }
+      case "Paused": {
+        seekToSeconds = msg.playbackStatus.atSeekSeconds;
+        break;
+      }
+      default: {
+        const _exhaustiveCheck: never = msg.playbackStatus;
+        console.error("Unknown playback status", _exhaustiveCheck);
+      }
+    }
+    console.log("Seek calculation", { seekToSeconds, activeVideoPlayedSeconds });
+    // Allow clients to drift a tiny little bit. Otherwise they will
+    // jump a bit to try and snap to the "correct" seek.
+    if (Math.abs(seekToSeconds - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
+      if (playerRef.current) {
+        playerRef.current.seekTo(seekToSeconds, true);
+        setActiveVideoPlayedSeconds(seekToSeconds);
+      }
+    }
+  }
+
+  // Manage WebSocket messages. Using `useEffect` deduplicates the
+  // `lastJsonMessage`s.
   useEffect(() => {
-    if (lastJsonMessage !== null) {
-      const msg = lastJsonMessage;
-      // Handle messages. The `useEffect` helps deduplicate `lastJsonMessage`s.
-      debug(msg);
+    const msg = lastJsonMessage;
+    if (msg) {
+      console.log("WebSocket message", msg);
 
       switch (msg.tag) {
         case "UpdateClientList": {
@@ -86,57 +170,23 @@ export default function Room() {
           break;
         }
         case "SetPlayer": {
+          setLastPlayerMessage(msg);
           setHasActiveVideo(true);
           setPlayerURL(msg.videoURL);
           setPlayerHostID(msg.submitter);
-          setVotedToSkip(false);
-          setSkipVotes(0);
+          if (msg.videoURL !== playerURL) {
+            setVotedToSkip(false);
+            setSkipVotes(0);
+          }
+          console.log("SetPlayer: syncSeek", msg);
+          syncSeek(msg);
           switch (msg.playbackStatus.tag) {
             case "Playing": {
-              // Calculate correct seek, compensating for start time.
-              const started = new Date(msg.playbackStatus.started);
-              const now = new Date();
-              const elapsedSeconds = Math.max(0, (now.getTime() - started.getTime()) / 1000);
-              const seekTarget = elapsedSeconds + msg.playbackStatus.fromSeekSeconds;
-
-              // Allow clients to drift a tiny little bit. Otherwise they will
-              // jump a bit to try and snap to the "correct" seek.
-              if (Math.abs(seekTarget - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
-                // TODO: FIXME: I think instead of seeking here, we should save
-                // the playback state and seek during `onPlay`. This handles the
-                // case when a client joins mid-playback so they receive the
-                // `SetPlayer` message before their video player is fully
-                // initialized. Right now this causes them to just play from
-                // zero instead of seeking correctly.
-                //
-                // Maybe we have to do both, to handle both scenarios? But it
-                // feels like there is one general solution here.
-                //
-                // There are two cases here: either the control message arrives
-                // before the player is ready, or after the player is ready. To
-                // handle the case where the control message arrives before, we
-                // should save the latest control message and apply it during
-                // `onReady`. To handle the case where the control message
-                // arrives after, we should apply the control message on
-                // arrival too.
-                playerRef.current?.seekTo(seekTarget, true);
-                setActiveVideoPlayedSeconds(seekTarget);
-              }
-
-              console.log("SetPlayer.Playing: setPlayingDesired(true)");
               setPlayingDesired(true);
               setPlayingActual(true);
               break;
             }
             case "Paused": {
-              // Allow clients to drift a tiny little bit. Otherwise they will
-              // jump a bit on pause to try and snap to the "correct" seek.
-              if (Math.abs(msg.playbackStatus.atSeekSeconds - activeVideoPlayedSeconds) > SECONDS_DRIFT_ALLOWED) {
-                playerRef.current?.seekTo(msg.playbackStatus.atSeekSeconds, true);
-                setActiveVideoPlayedSeconds(msg.playbackStatus.atSeekSeconds);
-              }
-
-              console.log("SetPlayer.Paused: setPlayingDesired(true)");
               setPlayingDesired(false);
               setPlayingActual(false);
               break;
@@ -149,16 +199,16 @@ export default function Room() {
           break;
         }
         case "UnsetPlayer": {
+          setLastPlayerMessage(msg);
           setHasActiveVideo(false);
           setPlayerURL("");
           setPlayerHostID("");
-          setVotedToSkip(false);
-          setSkipVotes(0);
-          setActiveVideoPlayedSeconds(0);
-          setActiveVideoDuration(undefined);
-          console.log("UnsetPlayer: setPlayingDesired(true)");
           setPlayingDesired(false);
           setPlayingActual(false);
+          setActiveVideoPlayedSeconds(0);
+          setActiveVideoDuration(undefined);
+          setVotedToSkip(false);
+          setSkipVotes(0);
           break;
         }
         default: {
@@ -168,50 +218,6 @@ export default function Room() {
       }
     }
   }, [lastJsonMessage]);
-
-  // Hooks related to player health.
-  // const playerRef = useRef<ReturnType<typeof YouTubePlayer> | null>(null);
-  const playerRef = useRef<PlayerController | null>(null);
-  const [playerLoaded, setPlayerLoaded] = useState(false);
-  const [playerReady, setPlayerReady] = useState(false);
-  const [playerError, setPlayerError] = useState<{} | undefined>(undefined);
-
-  // Hooks related to playback.
-  const [showAutoplayBlockedDialog, setShowAutoplayBlockedDialog] = useState(false);
-  const [playerVolume, setPlayerVolume] = useState(100);
-  const [playerMuted, setPlayerMuted] = useState(false);
-  // The desired `playing` status. We maintain this to quickly override user
-  // inputs in the player using `setTimeout(..., 1)` when needed.
-  const [playingDesired, setPlayingDesired] = useState(false);
-  // The actual `playing` status reflecting the player's state. Note that this
-  // can go out of sync with the player if the player callbacks are not
-  // respected. The player only synchronizes with this value _when the value
-  // changes_.
-  const [playingActual, setPlayingActual] = useState(false);
-
-  // Hooks related to the active video.
-  const [hasActiveVideo, setHasActiveVideo] = useState(false);
-  const [playerURL, setPlayerURL] = useState("");
-  const [playerHostID, setPlayerHostID] = useState("");
-  const [activeVideoDuration, setActiveVideoDuration] = useState<number | undefined>(undefined);
-  const [activeVideoPlayedSeconds, setActiveVideoPlayedSeconds] = useState(0);
-
-  // Hooks related to the player seeking control.
-  const [isSeeking, setIsSeeking] = useState(false);
-  const [seekTarget, setSeekTarget] = useState(0);
-
-  // Hooks related to the client list.
-  const [clients, setClients] = useState<Client[]>([]);
-  const [myClientID, setMyClientID] = useState("");
-  const [newHandleInput, setNewHandleInput] = useState("");
-
-  // Hooks related to the queue.
-  const [addToQueueInput, setAddToQueueInput] = useState("");
-  const [queuedVideos, setQueuedVideos] = useState<QueuedVideo[]>([]);
-
-  // Hooks related to skip voting.
-  const [votedToSkip, setVotedToSkip] = useState(false);
-  const [skipVotes, setSkipVotes] = useState(0);
 
   // Render disconnected state. Note that all returns must occur after all hooks
   // are called, so that all hooks are called in the same order every render.
@@ -266,91 +272,88 @@ export default function Room() {
         volume={playerVolume}
         muted={playerMuted}
         onReady={(e) => {
-          debug("onReady", { e, playingDesired, playingActual });
+          console.log("onReady", { e, playingDesired, playingActual });
           playerRef.current = e.target;
           setPlayerReady(true);
           if (playingDesired) {
             setPlayingActual(true);
           }
-          const duration = playerRef.current?.getDuration();
+          const duration = playerRef.current.getDuration();
+          console.log("onReady: setActiveVideoDuration", duration);
+          setActiveVideoDuration(duration);
           if (duration) {
-            setActiveVideoDuration(duration);
-            // This fixes a UI glitch that can occur when the user joins a video
-            // that was played to completion but has been over for a long time,
-            // and the "video played seconds" is momentarily calculated to be
-            // longer than the video duration.
+            // This fixes a UI glitch that can occur when the user joins a room
+            // with an active video where a client has spent longer than the
+            // duration of the video without sending `PlaybackFinished`. In this
+            // case, the "video seconds played" will momentarily be calculated
+            // to be longer than the video's duration.
+            //
+            // This can happen if a client in the room has an extremely bad
+            // network connection.
             if (activeVideoPlayedSeconds > duration) {
               setActiveVideoPlayedSeconds(duration);
             }
           }
         }}
         onPlay={() => {
-          debug("onPlay", { playingActual, playingDesired });
+          console.log("onPlay", { playingActual, playingDesired });
+          // For some reason, this does not work during `onReady`. I think it's
+          // because I need to call seek only after the video (not the player)
+          // is loaded? But YouTube, in their infinite wisdom, have decided not
+          // to give us a lifecycle event for that. Hooray!
+          //
+          // This handles the case where a control message is sent before the
+          // player is initialized.
+          if (lastPlayerMessage && lastPlayerMessage.tag === "SetPlayer") {
+            syncSeek(lastPlayerMessage);
+          }
           setPlayingActual(true);
           if (!playingDesired) {
             setTimeout(() => setPlayingActual(false), 1);
           }
-          sendJsonMessage({
-            tag: "PlaybackStarted",
-          });
+          sendJsonMessage({ tag: "PlaybackStarted" });
         }}
         onPause={() => {
-          debug("onPause", { playingDesired });
-          // Synchronize `playingActual` with the actual player state.
+          console.log("onPause", { playingDesired });
           setPlayingActual(false);
-
-          // If the player _shouldn't_ be paused, immediately unpause it on
-          // the next tick.
           if (playingDesired) {
             setTimeout(() => setPlayingActual(true), 1);
           }
         }}
         onProgress={({ playedSeconds }) => {
-          // debug("progress", playedSeconds);
           setActiveVideoPlayedSeconds(playedSeconds);
-
-          const duration = playerRef.current?.getDuration();
-          if (duration) {
-            setActiveVideoDuration(duration);
-            // This fixes a UI glitch that can occur when the user joins a video
-            // that was played to completion but has been over for a long time,
-            // and the "video played seconds" is momentarily calculated to be
-            // longer than the video duration.
-            if (activeVideoPlayedSeconds > duration) {
-              setActiveVideoPlayedSeconds(duration);
-            }
-          }
+          // We continue trying to set duration during play because sometimes it
+          // isn't available in `onReady`, and returns `undefined` instead.
+          setActiveVideoDuration(playerRef.current!.getDuration());
         }}
         onEnded={() => {
-          debug("onEnded");
+          console.log("onEnded");
           if (activeVideoDuration) {
+            // This is needed because the progress doesn't fire every frame.
             setActiveVideoPlayedSeconds(activeVideoDuration);
           }
-          sendJsonMessage({
-            tag: "PlaybackFinished",
-          });
+          sendJsonMessage({ tag: "PlaybackFinished" });
         }}
         onAutoplayBlocked={() => {
           // If this site does not have autoplay permissions for this user,
           // begin autoplay on mute.
-          debug("onAutoplayBlocked");
+          console.log("onAutoplayBlocked");
           setShowAutoplayBlockedDialog(true);
           setPlayingActual(false);
           setPlayerMuted(true);
           setTimeout(() => {
-            console.log("seeked", { activeVideoPlayedSeconds });
-            playerRef.current?.seekTo(activeVideoPlayedSeconds, true);
             setPlayingActual(true);
           }, 1);
         }}
         onError={(err) => {
           // TODO: Some of these errors (like error code 2, "bad video ID")
           // should be recoverable. In particular, the video player doesn't
-          // break - you can load another video ID it will happily continue. But
-          // we don't currently have a way to do this - there's no way for the
-          // host to skip their bad video without refreshing (and thus losing
-          // all of their queued videos), and it will never continue naturally
-          // because no clients will send `PlaybackFinished`.
+          // break - you can load another video ID and it will happily continue.
+          // But we don't currently have a way to do this - there's no way for
+          // the host to skip their bad video without refreshing (and thus
+          // losing all of their queued videos), and it will never continue
+          // naturally because no clients will send `PlaybackFinished` since
+          // `onEnded` will never fire.
           //
           // Maybe we should have clients send `PlaybackFinished` during
           // `onError`? Maybe we should validate video IDs in the backend? Maybe
@@ -364,13 +367,14 @@ export default function Room() {
           // shouldn't kill the client, but there is also no way for the client
           // to make the bad videos playable.
           console.error(err);
-          setPlayerError(err);
+          // setPlayerError(err);
         }}
+
         // TODO: Add callbacks for onBuffer and onBufferEnd and use them for
-        // synchronization after buffering.
+        // synchronization after buffering? So far, everyone's latency has been
+        // good enough that this has not been needed.
       />
       <div className="mt-4">
-        {/* TODO: Load video information from API (title, channel, etc.) and display here. */}
         <p>
           {hasActiveVideo ? (
             <>
@@ -427,7 +431,7 @@ export default function Room() {
                   className="ml-2 inline-block align-middle"
                   type="range"
                   min="0"
-                  value={isSeeking ? seekTarget : activeVideoPlayedSeconds}
+                  value={isSeeking ? isSeekingValue : activeVideoPlayedSeconds}
                   max={activeVideoDuration || 1}
                   step="any"
                   disabled={!(hasActiveVideo && playerReady && activeVideoDuration)}
@@ -435,21 +439,21 @@ export default function Room() {
                     setIsSeeking(true);
                   }}
                   onChange={(e) => {
-                    setSeekTarget(Number(e.target.value));
+                    setIsSeekingValue(Number(e.target.value));
                   }}
                   onMouseUp={() => {
-                    playerRef.current?.seekTo(seekTarget, true);
-                    setActiveVideoPlayedSeconds(seekTarget);
+                    playerRef.current?.seekTo(isSeekingValue, true);
+                    setActiveVideoPlayedSeconds(isSeekingValue);
                     setIsSeeking(false);
                     if (playingDesired) {
                       sendJsonMessage({
                         tag: "RequestPlay",
-                        fromSeekSeconds: Math.round(seekTarget),
+                        fromSeekSeconds: Math.round(isSeekingValue),
                       });
                     } else {
                       sendJsonMessage({
                         tag: "RequestPause",
-                        atSeekSeconds: Math.round(seekTarget),
+                        atSeekSeconds: Math.round(isSeekingValue),
                       });
                     }
                   }}
