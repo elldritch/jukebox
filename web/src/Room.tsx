@@ -23,7 +23,7 @@ type UpdateClientList = {
 type SetPlayer = {
   tag: "SetPlayer";
   submitter: ClientID;
-  videoURL: string;
+  videoID: string;
   playbackStatus: PlaybackStatus;
 };
 
@@ -48,7 +48,7 @@ type UpdateQueue = {
 };
 
 type QueuedVideo = {
-  videoURL: string;
+  videoID: string;
   submitter: ClientID;
 };
 
@@ -173,9 +173,9 @@ export default function Room() {
         case "SetPlayer": {
           setLastPlayerMessage(msg);
           setHasActiveVideo(true);
-          setPlayerURL(msg.videoURL);
+          setPlayerURL(msg.videoID);
           setPlayerHostID(msg.submitter);
-          if (msg.videoURL !== playerURL) {
+          if (msg.videoID !== playerURL) {
             setVotedToSkip(false);
             setSkipVotes(0);
           }
@@ -299,9 +299,9 @@ export default function Room() {
         onPlay={() => {
           console.log("onPlay", { playingActual, playingDesired });
           // For some reason, this does not work during `onReady`. I think it's
-          // because I need to call seek only after the video (not the player)
-          // is loaded? But YouTube, in their infinite wisdom, have decided not
-          // to give us a lifecycle event for that. Hooray!
+          // because I can call seek only after the video (as opposed to the
+          // player) is loaded? But YouTube, in their infinite wisdom, have
+          // decided not to give us a lifecycle event for that. Hooray!
           //
           // This handles the case where a control message is sent before the
           // player is initialized.
@@ -518,7 +518,7 @@ export default function Room() {
               e.preventDefault();
               sendJsonMessage({
                 tag: "AddToQueue",
-                videoURL: addToQueueInput,
+                videoID: addToQueueInput,
               });
               setAddToQueueInput("");
             }}
@@ -548,7 +548,7 @@ export default function Room() {
           <ul role="list" className="divide-y divide-gray-200">
             {queuedVideos.length > 0 ? (
               queuedVideos.map((video) => (
-                <li key={video.videoURL} className="py-4 text-ellipsis block overflow-hidden">
+                <li key={video.videoID} className="py-4 text-ellipsis block overflow-hidden">
                   {handle(video.submitter) ? (
                     <>
                       {handle(video.submitter)}
@@ -557,7 +557,7 @@ export default function Room() {
                   ) : (
                     <code>ERROR: UNKNOWN SUBMITTER: {JSON.stringify(video.submitter)}</code>
                   )}
-                  : {video.videoURL}
+                  : {video.videoID}
                 </li>
               ))
             ) : (
