@@ -366,6 +366,23 @@ export default function Room() {
         // synchronization after buffering? So far, everyone's latency has been
         // good enough that this has not been needed.
       />
+      {errorMessage && (
+        <div className="text-sm text-red-700 border-l-4 border-red-400 bg-red-50 p-4 mt-2 flex">
+          <div>{errorMessage}</div>
+          <div className="ml-auto pl-3">
+            <div className="-mx-1.5 -my-1.5">
+              <button
+                type="button"
+                className="inline-flex rounded-md bg-red-50 p-1.5 text-red-500 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 focus:ring-offset-red-50"
+                onClick={() => setErrorMessage(null)}
+              >
+                <span className="sr-only">Dismiss</span>
+                <XMarkIcon aria-hidden="true" className="size-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mt-4">
         <p>
           {hasActiveVideo ? (
@@ -491,23 +508,6 @@ export default function Room() {
             />
             <span className="ml-2 text-sm">{playerVolume + "%"}</span>
           </div>
-          {errorMessage && (
-            <div className="text-sm text-red-700 border-l-4 border-red-400 bg-red-50 p-4 mt-2 flex">
-              <div>{errorMessage}</div>
-              <div className="ml-auto pl-3">
-                <div className="-mx-1.5 -my-1.5">
-                  <button
-                    type="button"
-                    className="inline-flex rounded-md bg-red-50 p-1.5 text-red-500 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 focus:ring-offset-red-50"
-                    onClick={() => setErrorMessage(null)}
-                  >
-                    <span className="sr-only">Dismiss</span>
-                    <XMarkIcon aria-hidden="true" className="size-5" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </>
       )}
       <div className="mt-4 grid grid-cols-2 gap-x-4">
@@ -516,30 +516,34 @@ export default function Room() {
             className="flex rounded-md shadow-sm"
             onSubmit={(e) => {
               e.preventDefault();
-              let slug = addToQueueInput.trim();
-              try {
-                const url = new URL(addToQueueInput);
-                let param = url.searchParams.get('v');
-                if (param) {
-                  slug = param;
-                }
-              } catch (error) {}
-              sendJsonMessage({
-                tag: "AddToQueue",
-                videoID: slug,
-              });
+              const input = addToQueueInput.trim();
               setAddToQueueInput("");
+              if (!URL.canParse(input)) {
+                setErrorMessage(<>Error: invalid URL</>);
+                return;
+              }
+              const url = new URL(input);
+              if (url.hostname !== "www.youtube.com") {
+                setErrorMessage(<>Error: not a YouTube URL</>);
+                return;
+              }
+              const videoID = url.searchParams.get("v");
+              if (!videoID) {
+                setErrorMessage(<>Error: could not parse video ID from URL</>);
+                return;
+              }
+              sendJsonMessage({ tag: "AddToQueue", videoID });
             }}
           >
             <div className="relative flex grow items-stretch focus-within:z-10">
               <label htmlFor="video-id" className="sr-only">
-                Video ID
+                YouTube URL
               </label>
               <input
                 id="video-id"
                 name="video-id"
                 type="text"
-                placeholder="Video ID"
+                placeholder="YouTube URL"
                 value={addToQueueInput}
                 onChange={(e) => setAddToQueueInput(e.target.value)}
                 className="block w-full rounded-none rounded-l-md border-0 py-1.5 px-3 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm/6"
