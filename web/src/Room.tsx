@@ -345,7 +345,7 @@ export default function Room() {
                 Chrome blocks autoplaying with sound
               </a>
               , so you may need to unmute or click the video to start playing.
-            </>
+            </>,
           );
           setPlayingActual(false);
           setPlayerMuted(true);
@@ -357,7 +357,7 @@ export default function Room() {
             <>
               <p>The player encountered an error, so we skipped that video. Here's the error:</p>
               <code className="inline-block mt-2">{JSON.stringify(err, null, 2)}</code>
-            </>
+            </>,
           );
           sendJsonMessage({ tag: "PlaybackFinished" });
         }}

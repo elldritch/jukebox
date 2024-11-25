@@ -1,9 +1,9 @@
-import { StrictMode } from 'react';
-import ReactDOM from 'react-dom/client';
+import { StrictMode } from "react";
+import ReactDOM from "react-dom/client";
 
-import * as Sentry from '@sentry/react';
+import * as Sentry from "@sentry/react";
 
-import Room from './Room';
+import Room from "./Room";
 
 Sentry.init({
   dsn: "https://0da9fc1284620f49e9c5372ab2707cb5@o4508357896634368.ingest.us.sentry.io/4508357905612800",
@@ -17,8 +17,8 @@ Sentry.init({
   replaysOnErrorSampleRate: 1.0, // If you're not already sampling the entire session, change the sample rate to 100% when sampling sessions where errors occur.
 });
 
-ReactDOM.createRoot(document.getElementById('react-root')!).render(
+ReactDOM.createRoot(document.getElementById("react-root")!).render(
   <StrictMode>
     <Room />
-  </StrictMode>
+  </StrictMode>,
 );

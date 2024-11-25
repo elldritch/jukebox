@@ -16,7 +16,5 @@
     "resolveJsonModule": true,
     "strict": true
   },
-  "include": [
-    "src/**/*.tsx"
-  ]
+  "include": ["src/**/*.tsx"]
 }
