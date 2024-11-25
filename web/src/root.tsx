@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
 
 import * as Sentry from "@sentry/react";
+import { PostHogProvider } from "posthog-js/react";
 
 import Room from "./Room";
 
@@ -19,6 +20,13 @@ Sentry.init({
 
 ReactDOM.createRoot(document.getElementById("react-root")!).render(
   <StrictMode>
-    <Room />
+    <PostHogProvider
+      // @ts-expect-error
+      apiKey={process.env.REACT_APP_PUBLIC_POSTHOG_KEY}
+      // @ts-expect-error
+      options={{ api_host: process.env.REACT_APP_PUBLIC_POSTHOG_HOST }}
+    >
+      <Room />
+    </PostHogProvider>
   </StrictMode>,
 );
