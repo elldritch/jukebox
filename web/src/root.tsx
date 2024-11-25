@@ -23,8 +23,12 @@ ReactDOM.createRoot(document.getElementById("react-root")!).render(
     <PostHogProvider
       // @ts-expect-error
       apiKey={process.env.REACT_APP_PUBLIC_POSTHOG_KEY}
-      // @ts-expect-error
-      options={{ api_host: process.env.REACT_APP_PUBLIC_POSTHOG_HOST }}
+      options={{
+        // @ts-expect-error
+        api_host: process.env.REACT_APP_PUBLIC_POSTHOG_API_HOST,
+        // @ts-expect-error
+        ui_host: process.env.REACT_APP_PUBLIC_POSTHOG_UI_HOST,
+      }}
     >
       <Room />
     </PostHogProvider>

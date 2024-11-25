@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "build": "npm run build:js && npm run build:css",
-    "build:js": "NODE_ENV=production node --env-file=.env ./esbuild.js",
+    "build:js": "NODE_ENV=production node --env-file=.env ./esbuild.mjs",
     "build:css": "tailwindcss --input ./tailwind.css --output ../static/styles.css",
     "dev": "concurrently --kill-others \"npm run dev:js\" \"npm run dev:css\"",
-    "dev:js": "NODE_ENV=development node --env-file=.env ./esbuild.js",
+    "dev:js": "NODE_ENV=development node --env-file=.env ./esbuild.mjs",
     "dev:css": "tailwindcss --input ./tailwind.css --output ../static/styles.css --watch",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
