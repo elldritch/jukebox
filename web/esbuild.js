@@ -31,5 +31,6 @@ const config = {
 if (process.env.NODE_ENV === "production") {
   await esbuild.build(config);
 } else {
-  await esbuild.context(config).watch();
+  const ctx = await esbuild.context(config);
+  await ctx.watch();
 }
