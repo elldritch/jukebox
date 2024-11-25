@@ -18,18 +18,18 @@ if (process.env.NODE_ENV === "production") {
   );
 }
 
-const ctx = await esbuild.context({
+const config = {
   entryPoints: ["./src/root.tsx"],
   bundle: true,
   outfile: "../static/room.js",
   sourcemap: true, // Source map generation must be turned on for Sentry
-  minify: true,
+  minify: process.env.NODE_ENV === "production",
   plugins,
   define: { ...processDefines },
-});
+};
 
 if (process.env.NODE_ENV === "production") {
-  await ctx.rebuild();
+  await esbuild.build(config);
 } else {
-  await ctx.watch();
+  await esbuild.context(config).watch();
 }
