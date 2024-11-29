@@ -48,9 +48,9 @@ export default function Player(props: PlayerProps) {
   const [lastVideoId, setLastVideoId] = useState("");
 
   // Initialize the player.
+  const loadedRef = useRef(false);
+  const iframeAPIReadyRef = useRef(false);
   useEffect(() => {
-    let loaded = false;
-    let iframeAPIReady = false;
     function onYTReady() {
       // This is needed because React's StrictMode runs useEffect twice, but
       // there's no way to destroy the side effect of player construction
@@ -124,17 +124,25 @@ export default function Player(props: PlayerProps) {
       });
       (window as any).player = playerRef.current;
     }
-    window.addEventListener("load", () => {
-      console.log("window.addEventListener: load");
-      loaded = true;
-      if (iframeAPIReady) {
-        onYTReady();
-      }
-    });
+    if (window.document.readyState === "complete") {
+      console.log("Document already loaded");
+      loadedRef.current = true;
+    } else {
+      console.log("Setting event listener for load");
+      window.addEventListener("load", () => {
+        const iframeAPIReady = iframeAPIReadyRef.current;
+        console.log("window.addEventListener: load", { iframeAPIReady });
+        loadedRef.current = true;
+        if (iframeAPIReady) {
+          onYTReady();
+        }
+      });
+    }
     // TODO: Add proper typings for these globals and externals.
     (window as any).onYouTubeIframeAPIReady = () => {
-      console.log("window.onYouTubeIframeAPIReady");
-      iframeAPIReady = true;
+      const loaded = loadedRef.current;
+      console.log("window.onYouTubeIframeAPIReady", { loaded });
+      iframeAPIReadyRef.current = true;
       if (loaded) {
         onYTReady();
       }
